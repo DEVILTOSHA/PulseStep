@@ -1,0 +1,6 @@
+{
+  "name": "PulseStep",
+  "description": "Smart pedometer and cardiovascular health suite tracking steps, GPS workouts, blood pressure, heart rate, and Google Health Connect sync.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
