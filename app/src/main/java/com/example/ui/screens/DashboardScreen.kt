@@ -17,9 +17,9 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.DirectionsRun
 import androidx.compose.material.icons.filled.AutoAwesome
 import androidx.compose.material.icons.filled.CheckCircle
-import androidx.compose.material.icons.filled.DirectionsRun
 import androidx.compose.material.icons.filled.Favorite
 import androidx.compose.material.icons.filled.MonitorHeart
 import androidx.compose.material.icons.filled.PlayArrow
@@ -124,7 +124,7 @@ fun DashboardScreen(
                         contentAlignment = Alignment.Center
                     ) {
                         Icon(
-                            imageVector = Icons.Default.DirectionsRun,
+                            imageVector = Icons.AutoMirrored.Filled.DirectionsRun,
                             contentDescription = "Workout",
                             tint = MaterialTheme.colorScheme.onPrimary
                         )
@@ -204,10 +204,10 @@ fun DashboardScreen(
                             color = bpColor.copy(alpha = 0.2f)
                         ) {
                             Text(
-                                text = latestBp?.category ?: "Normal",
+                                text = latestBp?.category ?: "No Logs",
                                 fontSize = 10.sp,
                                 fontWeight = FontWeight.Bold,
-                                color = bpColor,
+                                color = if (latestBp != null) bpColor else MaterialTheme.colorScheme.onSurfaceVariant,
                                 modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
                             )
                         }
@@ -255,13 +255,13 @@ fun DashboardScreen(
                         )
                         Surface(
                             shape = RoundedCornerShape(6.dp),
-                            color = TealAccent.copy(alpha = 0.2f)
+                            color = (if (latestHr != null) TealAccent else MaterialTheme.colorScheme.onSurfaceVariant).copy(alpha = 0.2f)
                         ) {
                             Text(
-                                text = latestHr?.contextTag ?: "Resting",
+                                text = latestHr?.contextTag ?: "No Logs",
                                 fontSize = 10.sp,
                                 fontWeight = FontWeight.Bold,
-                                color = TealAccent,
+                                color = if (latestHr != null) TealAccent else MaterialTheme.colorScheme.onSurfaceVariant,
                                 modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
                             )
                         }

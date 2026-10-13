@@ -17,9 +17,9 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.DirectionsWalk
 import androidx.compose.material.icons.filled.AutoAwesome
 import androidx.compose.material.icons.filled.CheckCircle
-import androidx.compose.material.icons.filled.DirectionsWalk
 import androidx.compose.material.icons.filled.Favorite
 import androidx.compose.material.icons.filled.Lightbulb
 import androidx.compose.material.icons.filled.MonitorHeart
@@ -226,7 +226,7 @@ fun InsightsScreen(
 
         item {
             PillarCard(
-                icon = Icons.Default.DirectionsWalk,
+                icon = Icons.AutoMirrored.Filled.DirectionsWalk,
                 title = "Aerobic Step Target",
                 status = report?.activityStatus ?: "Active",
                 description = "Walking 8,000–10,000 steps daily reduces all-cause mortality and strengthens myocardial efficiency.",

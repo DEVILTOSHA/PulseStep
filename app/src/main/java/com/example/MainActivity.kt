@@ -17,13 +17,16 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.DirectionsRun
+import androidx.compose.material.icons.automirrored.filled.DirectionsWalk
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.AutoAwesome
 import androidx.compose.material.icons.filled.BarChart
-import androidx.compose.material.icons.filled.DirectionsRun
-import androidx.compose.material.icons.filled.DirectionsWalk
 import androidx.compose.material.icons.filled.Favorite
+import androidx.compose.material.icons.filled.FlashOn
 import androidx.compose.material.icons.filled.MonitorHeart
+import androidx.compose.material.icons.filled.Person
+import androidx.compose.material.icons.filled.Share
 import androidx.compose.material.icons.filled.Sync
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
@@ -38,10 +41,12 @@ import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
@@ -49,13 +54,14 @@ import androidx.compose.ui.unit.sp
 import androidx.health.connect.client.PermissionController
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
+import com.example.export.HealthReportExporter
 import com.example.ui.MainHealthViewModel
 import com.example.ui.NavigationTab
-import androidx.compose.material.icons.filled.FlashOn
 import com.example.ui.components.CameraPpgScannerSheet
 import com.example.ui.components.EditGoalsDialog
 import com.example.ui.components.LogBloodPressureDialog
 import com.example.ui.components.LogHeartRateDialog
+import com.example.ui.components.ProfileSettingsDialog
 import com.example.ui.screens.AnalyticsScreen
 import com.example.ui.screens.DashboardScreen
 import com.example.ui.screens.InsightsScreen
@@ -82,11 +88,13 @@ class MainActivity : ComponentActivity() {
 fun PulseStepApp(viewModel: MainHealthViewModel = viewModel()) {
     val uiState by viewModel.uiState.collectAsStateWithLifecycle()
 
+    val context = LocalContext.current
     var showLogBpDialog by remember { mutableStateOf(false) }
     var showLogHrDialog by remember { mutableStateOf(false) }
     var showEditGoalsDialog by remember { mutableStateOf(false) }
     var showPpgScanner by remember { mutableStateOf(false) }
-    var initialPulseForBp by remember { androidx.compose.runtime.mutableIntStateOf(72) }
+    var showProfileDialog by remember { mutableStateOf(false) }
+    var initialPulseForBp by remember { mutableIntStateOf(72) }
 
     // Camera Runtime Permission Launcher for Optical PPG
     val cameraPermissionLauncher = rememberLauncherForActivityResult(
@@ -170,15 +178,34 @@ fun PulseStepApp(viewModel: MainHealthViewModel = viewModel()) {
                         )
                     }
 
-                    // Quick Step simulator shortcut
+                    // Doctor Health Report Share Action
                     IconButton(
-                        onClick = { viewModel.simulateStepIncrement(150) },
-                        modifier = Modifier.testTag("top_bar_add_steps_button")
+                        onClick = {
+                            HealthReportExporter.shareReport(
+                                context,
+                                uiState.recent7Days,
+                                uiState.allBpLogs,
+                                uiState.allHrLogs
+                            )
+                        },
+                        modifier = Modifier.testTag("top_bar_share_report_button")
                     ) {
                         Icon(
-                            imageVector = Icons.Default.Add,
-                            contentDescription = "Simulate 150 Steps",
-                            tint = MaterialTheme.colorScheme.primary
+                            imageVector = Icons.Default.Share,
+                            contentDescription = "Share Health Report",
+                            tint = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+
+                    // Profile & Settings
+                    IconButton(
+                        onClick = { showProfileDialog = true },
+                        modifier = Modifier.testTag("top_bar_profile_button")
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.Person,
+                            contentDescription = "Profile Settings",
+                            tint = MaterialTheme.colorScheme.onSurfaceVariant
                         )
                     }
                 },
@@ -195,8 +222,8 @@ fun PulseStepApp(viewModel: MainHealthViewModel = viewModel()) {
                 NavigationTab.entries.forEach { tab ->
                     val isSelected = uiState.currentTab == tab
                     val (icon, testTag) = when (tab) {
-                        NavigationTab.DASHBOARD -> Icons.Default.DirectionsWalk to "nav_tab_today"
-                        NavigationTab.WORKOUT -> Icons.Default.DirectionsRun to "nav_tab_workout"
+                        NavigationTab.DASHBOARD -> Icons.AutoMirrored.Filled.DirectionsWalk to "nav_tab_today"
+                        NavigationTab.WORKOUT -> Icons.AutoMirrored.Filled.DirectionsRun to "nav_tab_workout"
                         NavigationTab.VITALS -> Icons.Default.MonitorHeart to "nav_tab_vitals"
                         NavigationTab.ANALYTICS -> Icons.Default.BarChart to "nav_tab_analytics"
                         NavigationTab.INSIGHTS -> Icons.Default.AutoAwesome to "nav_tab_insights"
@@ -334,6 +361,21 @@ fun PulseStepApp(viewModel: MainHealthViewModel = viewModel()) {
             onSaveGoal = { newGoal ->
                 viewModel.updateStepGoal(newGoal)
                 showEditGoalsDialog = false
+            }
+        )
+    }
+
+    if (showProfileDialog) {
+        ProfileSettingsDialog(
+            currentWeightKg = uiState.userWeightKg,
+            currentStrideLengthCm = uiState.userStrideCm,
+            onDismiss = { showProfileDialog = false },
+            onSaveProfile = { weightKg, strideLengthCm ->
+                viewModel.updateProfile(weightKg, strideLengthCm)
+                showProfileDialog = false
+            },
+            onResetCleanSlate = {
+                viewModel.resetAllDataToCleanSlate()
             }
         )
     }

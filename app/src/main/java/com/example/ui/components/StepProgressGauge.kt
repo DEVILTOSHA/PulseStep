@@ -17,9 +17,9 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.DirectionsRun
+import androidx.compose.material.icons.automirrored.filled.DirectionsWalk
 import androidx.compose.material.icons.filled.Add
-import androidx.compose.material.icons.filled.DirectionsRun
-import androidx.compose.material.icons.filled.DirectionsWalk
 import androidx.compose.material.icons.filled.LocalFireDepartment
 import androidx.compose.material.icons.filled.Timer
 import androidx.compose.material3.Button
@@ -130,7 +130,7 @@ fun StepProgressGauge(
                     horizontalAlignment = Alignment.CenterHorizontally
                 ) {
                     Icon(
-                        imageVector = Icons.Default.DirectionsWalk,
+                        imageVector = Icons.AutoMirrored.Filled.DirectionsWalk,
                         contentDescription = "Steps",
                         tint = MaterialTheme.colorScheme.primary,
                         modifier = Modifier.size(28.dp)
@@ -173,7 +173,7 @@ fun StepProgressGauge(
                 horizontalArrangement = Arrangement.SpaceEvenly
             ) {
                 MetricItem(
-                    icon = Icons.Default.DirectionsRun,
+                    icon = Icons.AutoMirrored.Filled.DirectionsRun,
                     value = "%.2f km".format(Locale.US, distanceMeters / 1000f),
                     label = "Distance",
                     tint = TealAccent

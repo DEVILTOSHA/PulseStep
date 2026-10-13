@@ -1,5 +1,6 @@
 package com.example.ui.screens
 
+import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -17,12 +18,15 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.DirectionsRun
-import androidx.compose.material.icons.filled.DirectionsWalk
+import androidx.compose.material.icons.automirrored.filled.DirectionsRun
+import androidx.compose.material.icons.automirrored.filled.DirectionsWalk
+import androidx.compose.material.icons.filled.GpsFixed
+import androidx.compose.material.icons.filled.GpsOff
 import androidx.compose.material.icons.filled.Hiking
 import androidx.compose.material.icons.filled.Pause
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Stop
+import androidx.compose.material.icons.filled.Warning
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
@@ -49,6 +53,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.example.data.local.WorkoutSession
 import com.example.location.WorkoutLiveMetrics
+import com.example.ui.components.EmergencySosDialog
 import com.example.ui.components.RouteMapCanvas
 import com.example.ui.theme.CoralHeart
 import com.example.ui.theme.EmeraldPrimary
@@ -69,6 +74,8 @@ fun WorkoutScreen(
 ) {
     var selectedActivity by remember { mutableStateOf("Walking") }
     var simulateMovement by remember { mutableStateOf(false) }
+    var isGpsEnabled by remember { mutableStateOf(true) }
+    var showSosDialog by remember { mutableStateOf(false) }
     val activities = listOf("Walking", "Jogging", "Hiking")
 
     LazyColumn(
@@ -78,17 +85,98 @@ fun WorkoutScreen(
         verticalArrangement = Arrangement.spacedBy(16.dp)
     ) {
         item {
-            Text(
-                text = "GPS Outdoor Workout",
-                fontSize = 20.sp,
-                fontWeight = FontWeight.Bold,
-                color = MaterialTheme.colorScheme.onSurface
-            )
-            Text(
-                text = "Real-time phone sensor step detection & GPS path tracking",
-                fontSize = 12.sp,
-                color = MaterialTheme.colorScheme.onSurfaceVariant
-            )
+            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text(
+                            text = "GPS Outdoor Workout",
+                            fontSize = 20.sp,
+                            fontWeight = FontWeight.Bold,
+                            color = MaterialTheme.colorScheme.onSurface
+                        )
+                        Text(
+                            text = "Real-time phone sensor step detection & GPS path tracking",
+                            fontSize = 12.sp,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+
+                    // Operable Safety SOS button: ONLY pops up if GPS is enabled!
+                    AnimatedVisibility(visible = isGpsEnabled) {
+                        Button(
+                            onClick = { showSosDialog = true },
+                            colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFFF3838)),
+                            shape = RoundedCornerShape(12.dp),
+                            modifier = Modifier.testTag("workout_sos_button")
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.Warning,
+                                contentDescription = "Emergency SOS",
+                                tint = Color.White,
+                                modifier = Modifier.size(18.dp)
+                            )
+                            Spacer(modifier = Modifier.width(6.dp))
+                            Text(
+                                text = "SOS",
+                                color = Color.White,
+                                fontWeight = FontWeight.ExtraBold,
+                                fontSize = 13.sp
+                            )
+                        }
+                    }
+                }
+
+                // GPS Enable / Disable Status Bar
+                Card(
+                    modifier = Modifier.fillMaxWidth(),
+                    shape = RoundedCornerShape(12.dp),
+                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant)
+                ) {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 12.dp, vertical = 6.dp),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            modifier = Modifier.weight(1f)
+                        ) {
+                            Icon(
+                                imageVector = if (isGpsEnabled) Icons.Default.GpsFixed else Icons.Default.GpsOff,
+                                contentDescription = "GPS Status",
+                                tint = if (isGpsEnabled) EmeraldPrimary else MaterialTheme.colorScheme.onSurfaceVariant,
+                                modifier = Modifier.size(18.dp)
+                            )
+                            Spacer(modifier = Modifier.width(8.dp))
+                            Column {
+                                Text(
+                                    text = if (isGpsEnabled) "GPS Location: ENABLED" else "GPS Location: DISABLED",
+                                    fontSize = 12.sp,
+                                    fontWeight = FontWeight.Bold,
+                                    color = if (isGpsEnabled) EmeraldPrimary else MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                                Text(
+                                    text = if (isGpsEnabled) "Safety SOS & Real-Time Route Active" else "Enable GPS to activate live path and Safety SOS",
+                                    fontSize = 10.sp,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                            }
+                        }
+                        Switch(
+                            checked = isGpsEnabled,
+                            onCheckedChange = { isGpsEnabled = it },
+                            colors = SwitchDefaults.colors(checkedThumbColor = EmeraldPrimary),
+                            modifier = Modifier.testTag("workout_gps_toggle")
+                        )
+                    }
+                }
+            }
         }
 
         // Live Route Map Canvas
@@ -209,9 +297,9 @@ fun WorkoutScreen(
                                 label = { Text(act) },
                                 leadingIcon = {
                                     val icon = when (act) {
-                                        "Jogging" -> Icons.Default.DirectionsRun
+                                        "Jogging" -> Icons.AutoMirrored.Filled.DirectionsRun
                                         "Hiking" -> Icons.Default.Hiking
-                                        else -> Icons.Default.DirectionsWalk
+                                        else -> Icons.AutoMirrored.Filled.DirectionsWalk
                                     }
                                     Icon(imageVector = icon, contentDescription = act, modifier = Modifier.size(16.dp))
                                 }
@@ -344,6 +432,13 @@ fun WorkoutScreen(
             Spacer(modifier = Modifier.height(24.dp))
         }
     }
+
+    if (showSosDialog) {
+        EmergencySosDialog(
+            currentGpsPoint = liveMetrics.routePoints.lastOrNull(),
+            onDismiss = { showSosDialog = false }
+        )
+    }
 }
 
 @Composable
@@ -400,9 +495,9 @@ private fun WorkoutHistoryCard(session: WorkoutSession) {
                     contentAlignment = Alignment.Center
                 ) {
                     val icon = when (session.activityType) {
-                        "Jogging" -> Icons.Default.DirectionsRun
+                        "Jogging" -> Icons.AutoMirrored.Filled.DirectionsRun
                         "Hiking" -> Icons.Default.Hiking
-                        else -> Icons.Default.DirectionsWalk
+                        else -> Icons.AutoMirrored.Filled.DirectionsWalk
                     }
                     Icon(imageVector = icon, contentDescription = session.activityType, tint = MaterialTheme.colorScheme.primary)
                 }

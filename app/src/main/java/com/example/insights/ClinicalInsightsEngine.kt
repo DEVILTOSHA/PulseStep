@@ -50,79 +50,96 @@ object ClinicalInsightsEngine {
         bpLogs: List<BloodPressureEntry>,
         hrLogs: List<HeartRateEntry>
     ): HealthInsightReport {
-        val avgSteps = if (dailySteps.isNotEmpty()) dailySteps.map { it.stepCount }.average().toInt() else 7000
+        val avgSteps = if (dailySteps.isNotEmpty()) dailySteps.map { it.stepCount }.average().toInt() else 0
         val latestBp = bpLogs.firstOrNull()
-        val avgHr = if (hrLogs.isNotEmpty()) hrLogs.map { it.bpm }.average().toInt() else 72
+        val avgHr = if (hrLogs.isNotEmpty()) hrLogs.map { it.bpm }.average().toInt() else 0
 
-        val bpCategory = latestBp?.let { classifyBloodPressure(it.systolic, it.diastolic) } ?: BpClassification.NORMAL
+        val bpCategory = latestBp?.let { classifyBloodPressure(it.systolic, it.diastolic) }
         val activityLevel = when {
             avgSteps >= 10000 -> "Optimal (Meeting WHO 10k target)"
             avgSteps >= 7500 -> "Active (Good daily consistency)"
             avgSteps >= 5000 -> "Moderately Active"
-            else -> "Low Activity (Under 5k steps/day)"
+            avgSteps > 0 -> "Getting Started (Keep building steps!)"
+            else -> "Clean Slate (Ready for your first walk)"
         }
-        val hrCategory = classifyHeartRate(avgHr)
+        val hrCategory = if (avgHr > 0) classifyHeartRate(avgHr) else "Awaiting Check"
+        val hrStatusString = if (avgHr > 0) "$avgHr bpm ($hrCategory)" else "No logs recorded"
+        val bpStatusString = bpCategory?.label ?: "Awaiting First BP Log"
 
-        // Try calling Gemini AI for an intelligent, contextual assessment
-        val geminiPrompt = """
-            You are a cardiovascular wellness and fitness expert advisor. Analyze the following user health telemetry:
-            - Weekly Average Steps: $avgSteps steps/day
-            - Activity Status: $activityLevel
-            - Latest Blood Pressure: ${latestBp?.systolic ?: 120}/${latestBp?.diastolic ?: 80} mmHg (${bpCategory.label})
-            - Average Resting Heart Rate: $avgHr bpm ($hrCategory)
-            
-            Provide a concise, encouraging 2-sentence health evaluation followed by 3 actionable bullet points for improvement.
-            Tone: empowering, clinically sound, accessible.
-        """.trimIndent()
+        // Try calling Gemini AI for an intelligent, contextual assessment if user has data
+        if (avgSteps > 0 || latestBp != null || avgHr > 0) {
+            val geminiPrompt = """
+                You are a cardiovascular wellness and fitness expert advisor. Analyze the following user health telemetry:
+                - Weekly Average Steps: $avgSteps steps/day
+                - Activity Status: $activityLevel
+                - Latest Blood Pressure: ${if (latestBp != null) "${latestBp.systolic}/${latestBp.diastolic} mmHg (${bpCategory?.label})" else "Not logged yet"}
+                - Average Resting Heart Rate: ${if (avgHr > 0) "$avgHr bpm ($hrCategory)" else "Not logged yet"}
+                
+                Provide a concise, encouraging 2-sentence health evaluation followed by 3 actionable bullet points for improvement.
+                Tone: empowering, clinically sound, accessible.
+            """.trimIndent()
 
-        val aiResult = GeminiClient.askGemini(geminiPrompt)
+            val aiResult = GeminiClient.askGemini(geminiPrompt)
 
-        if (aiResult.isSuccess) {
-            val aiText = aiResult.getOrNull() ?: ""
-            val lines = aiText.lines().filter { it.isNotBlank() }
-            val summary = lines.take(2).joinToString(" ")
-            val bullets = lines.filter { it.trim().startsWith("-") || it.trim().startsWith("*") || it.trim().matches(Regex("^\\d+\\..*")) }
-                .map { it.replace(Regex("^[-*\\d.]+\\s*"), "").trim() }
-                .filter { it.isNotEmpty() }
-                .take(3)
+            if (aiResult.isSuccess) {
+                val aiText = aiResult.getOrNull() ?: ""
+                val lines = aiText.lines().filter { it.isNotBlank() }
+                val summary = lines.take(2).joinToString(" ")
+                val bullets = lines.filter { it.trim().startsWith("-") || it.trim().startsWith("*") || it.trim().matches(Regex("^\\d+\\..*")) }
+                    .map { it.replace(Regex("^[-*\\d.]+\\s*"), "").trim() }
+                    .filter { it.isNotEmpty() }
+                    .take(3)
 
-            return HealthInsightReport(
-                title = "Gemini AI Health Assessment",
-                summary = if (summary.isNotEmpty()) summary else aiText,
-                bpStatus = bpCategory.label,
-                activityStatus = activityLevel,
-                heartRateStatus = "$avgHr bpm ($hrCategory)",
-                recommendations = if (bullets.isNotEmpty()) bullets else listOf(
-                    "Maintain 30 minutes of brisk daily walking to support optimal blood pressure.",
-                    "Incorporate potassium-rich foods and stay hydrated throughout your walks.",
-                    "Log blood pressure twice weekly at the same time for reliable trends."
-                ),
-                isAiGenerated = true
-            )
+                return HealthInsightReport(
+                    title = "Gemini AI Health Assessment",
+                    summary = if (summary.isNotEmpty()) summary else aiText,
+                    bpStatus = bpStatusString,
+                    activityStatus = activityLevel,
+                    heartRateStatus = hrStatusString,
+                    recommendations = if (bullets.isNotEmpty()) bullets else listOf(
+                        "Maintain 30 minutes of brisk daily walking to support optimal blood pressure.",
+                        "Incorporate potassium-rich foods and stay hydrated throughout your walks.",
+                        "Log blood pressure twice weekly at the same time for reliable trends."
+                    ),
+                    isAiGenerated = true
+                )
+            }
         }
 
         // Clinical rule-based engine fallback
         val recommendations = mutableListOf<String>()
-        if (bpCategory != BpClassification.NORMAL) {
-            recommendations.add("Consider 20-30 minutes of aerobic walking daily, which can help reduce systolic pressure by 4-9 mmHg.")
+        if (latestBp == null && avgSteps == 0) {
+            recommendations.add("Start tracking your daily stride: aim for an initial 3,000 to 5,000 steps today.")
+            recommendations.add("Take a resting heart rate reading using the Camera PPG Flash Pulse Scanner.")
+            recommendations.add("Log your baseline blood pressure with a certified oscillometric arm cuff.")
         } else {
-            recommendations.add("Great cardiovascular efficiency! Your blood pressure is in the optimal range.")
+            if (bpCategory != null && bpCategory != BpClassification.NORMAL) {
+                recommendations.add("Consider 20-30 minutes of aerobic walking daily, which can help reduce systolic pressure by 4-9 mmHg.")
+            } else {
+                recommendations.add("Keep up good cardiovascular habits! Consistent physical movement stabilizes resting blood pressure.")
+            }
+
+            if (avgSteps < 8000) {
+                recommendations.add("Gradually increase your step goal by 500 steps each day toward the 10,000 daily milestone.")
+            } else {
+                recommendations.add("Outstanding activity consistency! You are meeting evidence-based step targets.")
+            }
+
+            recommendations.add("Stay well-hydrated and log your morning resting pulse to monitor cardiovascular recovery.")
         }
 
-        if (avgSteps < 8000) {
-            recommendations.add("Gradually increase your step goal by 500 steps each day toward the 10,000 daily milestone.")
+        val summaryText = if (avgSteps == 0 && latestBp == null) {
+            "Welcome to PulseStep! Your tracker is fresh and ready. Begin walking and logging cardiovascular vitals to unlock personalized trend analysis."
         } else {
-            recommendations.add("Outstanding activity consistency! You are meeting evidence-based step targets.")
+            "Your average of $avgSteps steps/day supports healthy circulation. Current blood pressure status: $bpStatusString."
         }
-
-        recommendations.add("Stay well-hydrated and log your morning resting pulse to monitor cardiovascular recovery.")
 
         return HealthInsightReport(
             title = "Clinical Cardiovascular Overview",
-            summary = "Your 7-day average of $avgSteps steps/day supports healthy circulation. Recent blood pressure reading of ${latestBp?.systolic ?: 120}/${latestBp?.diastolic ?: 80} mmHg is categorized as ${bpCategory.label}.",
-            bpStatus = bpCategory.label,
+            summary = summaryText,
+            bpStatus = bpStatusString,
             activityStatus = activityLevel,
-            heartRateStatus = "$avgHr bpm ($hrCategory)",
+            heartRateStatus = hrStatusString,
             recommendations = recommendations,
             isAiGenerated = false
         )

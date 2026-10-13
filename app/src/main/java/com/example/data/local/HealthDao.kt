@@ -29,6 +29,9 @@ interface DailyStepDao {
 
     @Query("UPDATE daily_steps SET goalSteps = :newGoal")
     suspend fun updateAllStepGoals(newGoal: Int)
+
+    @Query("DELETE FROM daily_steps")
+    suspend fun clearAllDailySteps()
 }
 
 @Dao
@@ -47,6 +50,9 @@ interface BloodPressureDao {
 
     @Query("UPDATE blood_pressure_logs SET syncedToHealthConnect = :synced WHERE id = :id")
     suspend fun updateSyncStatus(id: Long, synced: Boolean)
+
+    @Query("DELETE FROM blood_pressure_logs")
+    suspend fun clearAllBloodPressureLogs()
 }
 
 @Dao
@@ -68,6 +74,9 @@ interface HeartRateDao {
 
     @Query("UPDATE heart_rate_logs SET syncedToHealthConnect = :synced WHERE id = :id")
     suspend fun updateSyncStatus(id: Long, synced: Boolean)
+
+    @Query("DELETE FROM heart_rate_logs")
+    suspend fun clearAllHeartRateLogs()
 }
 
 @Dao
@@ -83,4 +92,7 @@ interface WorkoutSessionDao {
 
     @Query("DELETE FROM workout_sessions WHERE id = :id")
     suspend fun deleteById(id: Long)
+
+    @Query("DELETE FROM workout_sessions")
+    suspend fun clearAllWorkouts()
 }

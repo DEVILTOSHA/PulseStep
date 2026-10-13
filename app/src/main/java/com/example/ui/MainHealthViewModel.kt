@@ -52,7 +52,9 @@ data class HealthUiState(
     val healthConnectMessage: String? = null,
     val healthReport: HealthInsightReport? = null,
     val isLoadingInsights: Boolean = false,
-    val isSensorActive: Boolean = false
+    val isSensorActive: Boolean = false,
+    val userWeightKg: Int = 70,
+    val userStrideCm: Int = 76
 )
 
 class MainHealthViewModel(application: Application) : AndroidViewModel(application) {
@@ -61,6 +63,7 @@ class MainHealthViewModel(application: Application) : AndroidViewModel(applicati
     private val repository = HealthDataRepository(database)
     val healthConnectManager = HealthConnectManager(application)
     val workoutTracker = WorkoutLocationTracker(application)
+    private val prefs = application.getSharedPreferences("pulse_step_prefs", android.content.Context.MODE_PRIVATE)
 
     private val dateFormat = SimpleDateFormat("yyyy-MM-dd", Locale.US)
     val todayKey: String = dateFormat.format(Date())
@@ -69,40 +72,59 @@ class MainHealthViewModel(application: Application) : AndroidViewModel(applicati
     private val _healthReport = MutableStateFlow<HealthInsightReport?>(null)
     private val _isLoadingInsights = MutableStateFlow(false)
     private val _isSensorActive = MutableStateFlow(false)
+    private val _userWeightKg = MutableStateFlow(prefs.getInt("user_weight_kg", 70))
+    private val _userStrideCm = MutableStateFlow(prefs.getInt("user_stride_cm", 76))
 
     lateinit var sensorManager: PedometerSensorManager
         private set
 
     val uiState: StateFlow<HealthUiState> = combine(
-        _currentTab,
-        repository.observeTodaySteps(todayKey),
-        repository.recent7DaysSteps,
-        repository.latestBloodPressure,
-        repository.allBloodPressureLogs,
-        repository.latestHeartRate,
-        repository.allHeartRateLogs,
-        repository.recentWorkouts,
-        workoutTracker.liveMetrics,
-        healthConnectManager.syncStatus,
-        healthConnectManager.lastSyncMessage,
-        _healthReport,
-        _isLoadingInsights,
-        _isSensorActive
-    ) { params ->
-        val currentTab = params[0] as NavigationTab
-        val todaySteps = params[1] as? DailyStepRecord
-        val recent7Days = (params[2] as? List<DailyStepRecord>) ?: emptyList()
-        val latestBp = params[3] as? BloodPressureEntry
-        val allBpLogs = (params[4] as? List<BloodPressureEntry>) ?: emptyList()
-        val latestHr = params[5] as? HeartRateEntry
-        val allHrLogs = (params[6] as? List<HeartRateEntry>) ?: emptyList()
-        val recentWorkouts = (params[7] as? List<WorkoutSession>) ?: emptyList()
-        val liveWorkout = (params[8] as? WorkoutLiveMetrics) ?: WorkoutLiveMetrics()
-        val healthConnectStatus = (params[9] as? HealthConnectStatus) ?: HealthConnectStatus.NEEDS_PERMISSIONS
-        val healthConnectMessage = params[10] as? String
-        val healthReport = params[11] as? HealthInsightReport
-        val isLoadingInsights = (params[12] as? Boolean) ?: false
-        val isSensorActive = (params[13] as? Boolean) ?: false
+        combine(
+            _currentTab,
+            repository.observeTodaySteps(todayKey),
+            repository.recent7DaysSteps,
+            repository.latestBloodPressure,
+            repository.allBloodPressureLogs
+        ) { tab, todaySteps, recent7Days, latestBp, allBpLogs ->
+            listOf(tab, todaySteps, recent7Days, latestBp, allBpLogs)
+        },
+        combine(
+            repository.latestHeartRate,
+            repository.allHeartRateLogs,
+            repository.recentWorkouts,
+            workoutTracker.liveMetrics,
+            healthConnectManager.syncStatus
+        ) { latestHr, allHrLogs, recentWorkouts, liveWorkout, healthConnectStatus ->
+            listOf(latestHr, allHrLogs, recentWorkouts, liveWorkout, healthConnectStatus)
+        },
+        combine(
+            healthConnectManager.lastSyncMessage,
+            _healthReport,
+            _isLoadingInsights,
+            _isSensorActive,
+            _userWeightKg
+        ) { healthConnectMessage, healthReport, isLoadingInsights, isSensorActive, userWeightKg ->
+            listOf(healthConnectMessage, healthReport, isLoadingInsights, isSensorActive, userWeightKg)
+        },
+        _userStrideCm
+    ) { p1, p2, p3, userStrideCm ->
+        val currentTab = p1[0] as NavigationTab
+        val todaySteps = p1[1] as? DailyStepRecord
+        val recent7Days = (p1[2] as? List<DailyStepRecord>) ?: emptyList()
+        val latestBp = p1[3] as? BloodPressureEntry
+        val allBpLogs = (p1[4] as? List<BloodPressureEntry>) ?: emptyList()
+
+        val latestHr = p2[0] as? HeartRateEntry
+        val allHrLogs = (p2[1] as? List<HeartRateEntry>) ?: emptyList()
+        val recentWorkouts = (p2[2] as? List<WorkoutSession>) ?: emptyList()
+        val liveWorkout = (p2[3] as? WorkoutLiveMetrics) ?: WorkoutLiveMetrics()
+        val healthConnectStatus = (p2[4] as? HealthConnectStatus) ?: HealthConnectStatus.NEEDS_PERMISSIONS
+
+        val healthConnectMessage = p3[0] as? String
+        val healthReport = p3[1] as? HealthInsightReport
+        val isLoadingInsights = (p3[2] as? Boolean) ?: false
+        val isSensorActive = (p3[3] as? Boolean) ?: false
+        val userWeightKg = (p3[4] as? Int) ?: 70
 
         HealthUiState(
             currentTab = currentTab,
@@ -118,7 +140,9 @@ class MainHealthViewModel(application: Application) : AndroidViewModel(applicati
             healthConnectMessage = healthConnectMessage,
             healthReport = healthReport,
             isLoadingInsights = isLoadingInsights,
-            isSensorActive = isSensorActive
+            isSensorActive = isSensorActive,
+            userWeightKg = userWeightKg,
+            userStrideCm = userStrideCm
         )
     }.stateIn(
         scope = viewModelScope,
@@ -133,7 +157,11 @@ class MainHealthViewModel(application: Application) : AndroidViewModel(applicati
         }
 
         viewModelScope.launch {
-            repository.seedSampleDataIfEmpty()
+            if (!prefs.getBoolean("clean_slate_v2_initialized", false)) {
+                repository.clearAllData()
+                prefs.edit().putBoolean("clean_slate_v2_initialized", true).apply()
+            }
+            repository.initFreshStateIfEmpty()
             healthConnectManager.checkAvailabilityAndPermissions()
             startSensorTracking()
             refreshHealthInsights()
@@ -168,8 +196,10 @@ class MainHealthViewModel(application: Application) : AndroidViewModel(applicati
             val currentSteps = existing?.stepCount ?: 0
             val goal = existing?.goalSteps ?: 10000
             val newSteps = currentSteps + stepDelta
-            val newDist = newSteps * 0.76f
-            val newCals = (newSteps * 0.045f).toInt()
+            val strideMeters = _userStrideCm.value / 100f
+            val newDist = newSteps * strideMeters
+            val calorieWeightFactor = (_userWeightKg.value / 70f).coerceIn(0.5f, 3.0f)
+            val newCals = (newSteps * 0.045f * calorieWeightFactor).toInt()
             val newMins = newSteps / 130
 
             val updatedRecord = DailyStepRecord(
@@ -185,6 +215,32 @@ class MainHealthViewModel(application: Application) : AndroidViewModel(applicati
 
             // Also feed into live workout if active
             workoutTracker.addStepDelta(stepDelta)
+        }
+    }
+
+    fun updateProfile(weightKg: Int, strideLengthCm: Int) {
+        viewModelScope.launch {
+            prefs.edit()
+                .putInt("user_weight_kg", weightKg)
+                .putInt("user_stride_cm", strideLengthCm)
+                .apply()
+            _userWeightKg.value = weightKg
+            _userStrideCm.value = strideLengthCm
+
+            // Recalculate today's distance & calories if today's record exists
+            val existing = repository.getTodaySteps(todayKey)
+            if (existing != null) {
+                val strideMeters = strideLengthCm / 100f
+                val newDist = existing.stepCount * strideMeters
+                val calorieWeightFactor = (weightKg / 70f).coerceIn(0.5f, 3.0f)
+                val newCals = (existing.stepCount * 0.045f * calorieWeightFactor).toInt()
+                repository.saveOrUpdateSteps(
+                    existing.copy(
+                        distanceMeters = newDist,
+                        caloriesBurned = newCals
+                    )
+                )
+            }
         }
     }
 
@@ -292,6 +348,15 @@ class MainHealthViewModel(application: Application) : AndroidViewModel(applicati
             val report = ClinicalInsightsEngine.generateHealthReport(steps, bps, hrs)
             _healthReport.value = report
             _isLoadingInsights.value = false
+        }
+    }
+
+    fun resetAllDataToCleanSlate() {
+        viewModelScope.launch {
+            repository.clearAllData()
+            repository.initFreshStateIfEmpty()
+            workoutTracker.stopWorkout()
+            refreshHealthInsights()
         }
     }
 

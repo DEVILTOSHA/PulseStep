@@ -42,24 +42,23 @@ class WorkoutLocationTracker(private val context: Context) : LocationListener {
     private var lastLocation: Location? = null
     private var simulatedIndex = 0
 
-    // Realistic park walking path coordinates for simulation fallback
+    // Realistic park walking path coordinates in India (Lodhi Gardens / Central Park loop) for simulation fallback
     private val simulatedBaseCoordinates = listOf(
-        LatLngPoint(37.774929, -122.419416),
-        LatLngPoint(37.775345, -122.418820),
-        LatLngPoint(37.775892, -122.418210),
-        LatLngPoint(37.776510, -122.417530),
-        LatLngPoint(37.777120, -122.416950),
-        LatLngPoint(37.777890, -122.416240),
-        LatLngPoint(37.778610, -122.415890),
-        LatLngPoint(37.779240, -122.416410),
-        LatLngPoint(37.779680, -122.417250),
-        LatLngPoint(37.780120, -122.418190),
-        LatLngPoint(37.779830, -122.419120),
-        LatLngPoint(37.779110, -122.419840),
-        LatLngPoint(37.778150, -122.420230),
-        LatLngPoint(37.777240, -122.420100),
-        LatLngPoint(37.776110, -122.419750),
-        LatLngPoint(37.775210, -122.419510)
+        LatLngPoint(28.593320, 77.219750),
+        LatLngPoint(28.593840, 77.220310),
+        LatLngPoint(28.594410, 77.220940),
+        LatLngPoint(28.595120, 77.221520),
+        LatLngPoint(28.595830, 77.221980),
+        LatLngPoint(28.596610, 77.222340),
+        LatLngPoint(28.597320, 77.221870),
+        LatLngPoint(28.597910, 77.221120),
+        LatLngPoint(28.598350, 77.220260),
+        LatLngPoint(28.597980, 77.219410),
+        LatLngPoint(28.597240, 77.218720),
+        LatLngPoint(28.596350, 77.218290),
+        LatLngPoint(28.595410, 77.218380),
+        LatLngPoint(28.594520, 77.218790),
+        LatLngPoint(28.593820, 77.219210)
     )
 
     fun startWorkout(activityType: String, simulateMovement: Boolean = false) {
