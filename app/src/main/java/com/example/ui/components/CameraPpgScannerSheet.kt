@@ -54,6 +54,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Dialog
@@ -285,7 +286,8 @@ fun CameraPpgScannerSheet(
                     }
                 } else {
                     // Scan Completed Results View
-                    val finalBpm = if (scanState.finalBpm > 0) scanState.finalBpm else 74
+                    // The manager only completes once it has a reliable reading
+                    val finalBpm = scanState.finalBpm
                     val hrCategory = ClinicalInsightsEngine.classifyHeartRate(finalBpm)
 
                     Box(
@@ -346,42 +348,52 @@ fun CameraPpgScannerSheet(
 
                     Spacer(modifier = Modifier.height(16.dp))
 
-                    // Action: Save to Heart Rate Log
-                    Button(
-                        onClick = {
-                            onSaveHeartRate(finalBpm)
-                            onDismiss()
-                        },
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .height(48.dp)
-                            .testTag("save_scanned_hr_button"),
-                        colors = ButtonDefaults.buttonColors(containerColor = EmeraldPrimary),
-                        shape = RoundedCornerShape(14.dp)
-                    ) {
-                        Icon(imageVector = Icons.Default.Favorite, contentDescription = "Save HR")
-                        Spacer(modifier = Modifier.width(8.dp))
-                        Text("Save as Heart Rate Record", fontWeight = FontWeight.Bold)
-                    }
+                    if (scanState.isSimulated) {
+                        Text(
+                            text = "Simulated reading for testing only. It won't be saved to your heart rate or blood pressure logs.",
+                            fontSize = 12.sp,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            textAlign = TextAlign.Center,
+                            modifier = Modifier.padding(bottom = 8.dp)
+                        )
+                    } else {
+                        // Action: Save to Heart Rate Log
+                        Button(
+                            onClick = {
+                                onSaveHeartRate(finalBpm)
+                                onDismiss()
+                            },
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .height(48.dp)
+                                .testTag("save_scanned_hr_button"),
+                            colors = ButtonDefaults.buttonColors(containerColor = EmeraldPrimary),
+                            shape = RoundedCornerShape(14.dp)
+                        ) {
+                            Icon(imageVector = Icons.Default.Favorite, contentDescription = "Save HR")
+                            Spacer(modifier = Modifier.width(8.dp))
+                            Text("Save as Heart Rate Record", fontWeight = FontWeight.Bold)
+                        }
 
-                    Spacer(modifier = Modifier.height(8.dp))
+                        Spacer(modifier = Modifier.height(8.dp))
 
-                    // Action: Log BP with this pulse
-                    Button(
-                        onClick = {
-                            onLogBpWithPulse(finalBpm)
-                            onDismiss()
-                        },
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .height(48.dp)
-                            .testTag("log_bp_with_scanned_pulse_button"),
-                        colors = ButtonDefaults.buttonColors(containerColor = CoralHeart),
-                        shape = RoundedCornerShape(14.dp)
-                    ) {
-                        Icon(imageVector = Icons.Default.MonitorHeart, contentDescription = "Log BP")
-                        Spacer(modifier = Modifier.width(8.dp))
-                        Text("Log Blood Pressure with $finalBpm bpm", fontWeight = FontWeight.Bold)
+                        // Action: Log BP with this pulse
+                        Button(
+                            onClick = {
+                                onLogBpWithPulse(finalBpm)
+                                onDismiss()
+                            },
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .height(48.dp)
+                                .testTag("log_bp_with_scanned_pulse_button"),
+                            colors = ButtonDefaults.buttonColors(containerColor = CoralHeart),
+                            shape = RoundedCornerShape(14.dp)
+                        ) {
+                            Icon(imageVector = Icons.Default.MonitorHeart, contentDescription = "Log BP")
+                            Spacer(modifier = Modifier.width(8.dp))
+                            Text("Log Blood Pressure with $finalBpm bpm", fontWeight = FontWeight.Bold)
+                        }
                     }
 
                     Spacer(modifier = Modifier.height(8.dp))

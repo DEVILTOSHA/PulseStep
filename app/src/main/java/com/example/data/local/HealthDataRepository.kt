@@ -1,10 +1,6 @@
 package com.example.data.local
 
 import kotlinx.coroutines.flow.Flow
-import java.text.SimpleDateFormat
-import java.util.Calendar
-import java.util.Date
-import java.util.Locale
 
 class HealthDataRepository(private val database: PulseStepDatabase) {
     private val dailyStepDao = database.dailyStepDao()
@@ -31,8 +27,8 @@ class HealthDataRepository(private val database: PulseStepDatabase) {
         dailyStepDao.insertOrUpdate(record)
     }
 
-    suspend fun updateStepGoal(newGoal: Int) {
-        dailyStepDao.updateAllStepGoals(newGoal)
+    suspend fun updateStepGoal(dateKey: String, newGoal: Int) {
+        dailyStepDao.updateStepGoal(dateKey, newGoal)
     }
 
     suspend fun logBloodPressure(systolic: Int, diastolic: Int, pulse: Int, category: String, note: String): Long {
@@ -89,10 +85,15 @@ class HealthDataRepository(private val database: PulseStepDatabase) {
         workoutSessionDao.clearAllWorkouts()
     }
 
-    suspend fun initFreshStateIfEmpty() {
-        val dateFormat = SimpleDateFormat("yyyy-MM-dd", Locale.US)
-        val todayKey = dateFormat.format(Date())
+    suspend fun markBloodPressureSynced(id: Long) {
+        bloodPressureDao.updateSyncStatus(id, true)
+    }
 
+    suspend fun markHeartRateSynced(id: Long) {
+        heartRateDao.updateSyncStatus(id, true)
+    }
+
+    suspend fun initFreshStateIfEmpty(todayKey: String, goalSteps: Int) {
         val existing = dailyStepDao.getDailyStep(todayKey)
         if (existing == null) {
             // Clean slate start: 0 steps, pristine metrics
@@ -103,7 +104,7 @@ class HealthDataRepository(private val database: PulseStepDatabase) {
                     distanceMeters = 0f,
                     caloriesBurned = 0,
                     activeMinutes = 0,
-                    goalSteps = 10000,
+                    goalSteps = goalSteps,
                     syncedToHealthConnect = false
                 )
             )

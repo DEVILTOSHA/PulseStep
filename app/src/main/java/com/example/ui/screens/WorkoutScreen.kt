@@ -1,6 +1,5 @@
 package com.example.ui.screens
 
-import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -66,7 +65,7 @@ import java.util.Locale
 fun WorkoutScreen(
     liveMetrics: WorkoutLiveMetrics,
     recentWorkouts: List<WorkoutSession>,
-    onStartWorkout: (activityType: String, simulate: Boolean) -> Unit,
+    onStartWorkout: (activityType: String, simulate: Boolean, useGps: Boolean) -> Unit,
     onPauseWorkout: () -> Unit,
     onResumeWorkout: () -> Unit,
     onFinishWorkout: () -> Unit,
@@ -105,28 +104,26 @@ fun WorkoutScreen(
                         )
                     }
 
-                    // Operable Safety SOS button: ONLY pops up if GPS is enabled!
-                    AnimatedVisibility(visible = isGpsEnabled) {
-                        Button(
-                            onClick = { showSosDialog = true },
-                            colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFFF3838)),
-                            shape = RoundedCornerShape(12.dp),
-                            modifier = Modifier.testTag("workout_sos_button")
-                        ) {
-                            Icon(
-                                imageVector = Icons.Default.Warning,
-                                contentDescription = "Emergency SOS",
-                                tint = Color.White,
-                                modifier = Modifier.size(18.dp)
-                            )
-                            Spacer(modifier = Modifier.width(6.dp))
-                            Text(
-                                text = "SOS",
-                                color = Color.White,
-                                fontWeight = FontWeight.ExtraBold,
-                                fontSize = 13.sp
-                            )
-                        }
+                    // Safety SOS is always reachable; calling 112 doesn't need GPS
+                    Button(
+                        onClick = { showSosDialog = true },
+                        colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFFF3838)),
+                        shape = RoundedCornerShape(12.dp),
+                        modifier = Modifier.testTag("workout_sos_button")
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.Warning,
+                            contentDescription = "Emergency SOS",
+                            tint = Color.White,
+                            modifier = Modifier.size(18.dp)
+                        )
+                        Spacer(modifier = Modifier.width(6.dp))
+                        Text(
+                            text = "SOS",
+                            color = Color.White,
+                            fontWeight = FontWeight.ExtraBold,
+                            fontSize = 13.sp
+                        )
                     }
                 }
 
@@ -162,7 +159,11 @@ fun WorkoutScreen(
                                     color = if (isGpsEnabled) EmeraldPrimary else MaterialTheme.colorScheme.onSurfaceVariant
                                 )
                                 Text(
-                                    text = if (isGpsEnabled) "Safety SOS & Real-Time Route Active" else "Enable GPS to activate live path and Safety SOS",
+                                    text = when {
+                                        liveMetrics.isRunning -> "Applies from your next workout"
+                                        isGpsEnabled -> "Route & distance from GPS; SOS shares your location"
+                                        else -> "Distance from steps × stride; SOS can't share your location"
+                                    },
                                     fontSize = 10.sp,
                                     color = MaterialTheme.colorScheme.onSurfaceVariant
                                 )
@@ -171,6 +172,7 @@ fun WorkoutScreen(
                         Switch(
                             checked = isGpsEnabled,
                             onCheckedChange = { isGpsEnabled = it },
+                            enabled = !liveMetrics.isRunning,
                             colors = SwitchDefaults.colors(checkedThumbColor = EmeraldPrimary),
                             modifier = Modifier.testTag("workout_gps_toggle")
                         )
@@ -338,7 +340,7 @@ fun WorkoutScreen(
                     }
 
                     Button(
-                        onClick = { onStartWorkout(selectedActivity, simulateMovement) },
+                        onClick = { onStartWorkout(selectedActivity, simulateMovement, isGpsEnabled) },
                         modifier = Modifier
                             .fillMaxWidth()
                             .height(52.dp)
@@ -435,7 +437,8 @@ fun WorkoutScreen(
 
     if (showSosDialog) {
         EmergencySosDialog(
-            currentGpsPoint = liveMetrics.routePoints.lastOrNull(),
+            // Simulated trail points are fake coordinates and must never go into a distress message
+            currentGpsPoint = if (liveMetrics.isSimulated) null else liveMetrics.routePoints.lastOrNull(),
             onDismiss = { showSosDialog = false }
         )
     }

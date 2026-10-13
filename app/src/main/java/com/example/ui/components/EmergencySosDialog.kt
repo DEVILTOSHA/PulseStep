@@ -75,7 +75,8 @@ import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.example.location.LatLngPoint
-import java.util.Locale
+import com.example.location.SosLocation
+import com.example.location.SosMessage
 
 /**
  * Emergency SOS Dialog customized for India (ERSS - 112, Police - 100,
@@ -151,11 +152,25 @@ fun EmergencySosDialog(
         }
     }
 
-    val lat = currentGpsPoint?.latitude ?: lastKnownLocation?.latitude ?: 28.6139
-    val lng = currentGpsPoint?.longitude ?: lastKnownLocation?.longitude ?: 77.2090
-    val isLiveGpsAcquired = currentGpsPoint != null || lastKnownLocation != null
-    val mapsUrl = "https://maps.google.com/?q=$lat,$lng"
-    val distressMessage = "EMERGENCY SOS (INDIA): Urgent help needed! My real-time GPS location: $mapsUrl (Coordinates: ${"%.5f".format(Locale.US, lat)}, ${"%.5f".format(Locale.US, lng)}). Tracked via PulseStep GPS Outdoor Workout Safety."
+    // Only real fixes are used. With none, the message says the location is unknown.
+    val sosLocation = remember(currentGpsPoint, lastKnownLocation) {
+        val now = System.currentTimeMillis()
+        when {
+            currentGpsPoint != null -> SosLocation(
+                currentGpsPoint.latitude,
+                currentGpsPoint.longitude,
+                ((now - currentGpsPoint.timestamp) / 60_000L).coerceAtLeast(0L)
+            )
+            lastKnownLocation != null -> SosLocation(
+                lastKnownLocation.latitude,
+                lastKnownLocation.longitude,
+                ((now - lastKnownLocation.time) / 60_000L).coerceAtLeast(0L)
+            )
+            else -> null
+        }
+    }
+    val isLiveGpsAcquired = sosLocation != null
+    val distressMessage = SosMessage.build(sosLocation)
 
     // Pulsing Strobe Background Animation
     val infiniteTransition = rememberInfiniteTransition(label = "sos_strobe")
@@ -249,13 +264,17 @@ fun EmergencySosDialog(
                                 )
                                 Spacer(modifier = Modifier.width(8.dp))
                                 Text(
-                                    text = if (isLiveGpsAcquired) "Live GPS Coordinates (India)" else "Acquiring GPS Fix (India)",
+                                    text = when {
+                                        sosLocation == null -> "Location unavailable"
+                                        sosLocation.ageMinutes > SosMessage.STALE_AFTER_MINUTES -> "Last known location (${sosLocation.ageMinutes} min ago)"
+                                        else -> "Current GPS location"
+                                    },
                                     fontWeight = FontWeight.Bold,
                                     fontSize = 13.sp
                                 )
                             }
                             Text(
-                                text = if (isLiveGpsAcquired) "LOCKED" else "SEARCHING",
+                                text = if (isLiveGpsAcquired) "LOCKED" else "NO FIX",
                                 fontSize = 10.sp,
                                 fontWeight = FontWeight.Bold,
                                 color = if (isLiveGpsAcquired) Color(0xFF00C896) else Color(0xFFFFA502)
@@ -269,13 +288,13 @@ fun EmergencySosDialog(
                         ) {
                             Column(modifier = Modifier.padding(10.dp)) {
                                 Text(
-                                    text = "LAT: ${"%.5f".format(Locale.US, lat)}° N",
+                                    text = if (sosLocation != null) "LAT: ${SosMessage.formatLatitude(sosLocation.latitude)}" else "No GPS fix — the SOS message will say your location is unknown",
                                     fontSize = 13.sp,
                                     fontWeight = FontWeight.Bold,
                                     fontFamily = FontFamily.Monospace
                                 )
                                 Text(
-                                    text = "LNG: ${"%.5f".format(Locale.US, lng)}° E",
+                                    text = if (sosLocation != null) "LNG: ${SosMessage.formatLongitude(sosLocation.longitude)}" else "",
                                     fontSize = 13.sp,
                                     fontWeight = FontWeight.Bold,
                                     fontFamily = FontFamily.Monospace
@@ -304,7 +323,7 @@ fun EmergencySosDialog(
                     Icon(imageVector = Icons.Default.Share, contentDescription = "Share Location")
                     Spacer(modifier = Modifier.width(8.dp))
                     Text(
-                        text = "Share Live GPS Distress Link",
+                        text = if (isLiveGpsAcquired) "Share GPS Distress Link" else "Share SOS Message (no location)",
                         fontWeight = FontWeight.Bold,
                         fontSize = 14.sp
                     )

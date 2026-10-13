@@ -30,7 +30,8 @@ data class WorkoutLiveMetrics(
     val caloriesBurned: Int = 0,
     val routePoints: List<LatLngPoint> = emptyList(),
     val activityType: String = "Walking",
-    val isSimulated: Boolean = false
+    val isSimulated: Boolean = false,
+    val usesGps: Boolean = true
 )
 
 class WorkoutLocationTracker(private val context: Context) : LocationListener {
@@ -41,6 +42,7 @@ class WorkoutLocationTracker(private val context: Context) : LocationListener {
 
     private var lastLocation: Location? = null
     private var simulatedIndex = 0
+    private var strideMeters = 0.76f
 
     // Realistic park walking path coordinates in India (Lodhi Gardens / Central Park loop) for simulation fallback
     private val simulatedBaseCoordinates = listOf(
@@ -61,9 +63,24 @@ class WorkoutLocationTracker(private val context: Context) : LocationListener {
         LatLngPoint(28.593820, 77.219210)
     )
 
-    fun startWorkout(activityType: String, simulateMovement: Boolean = false) {
+    /**
+     * Distance comes from exactly one source: GPS fixes when [useGps] is on, otherwise steps × stride.
+     * [userStrideMeters] is the walking stride from the user's profile.
+     */
+    fun startWorkout(
+        activityType: String,
+        simulateMovement: Boolean = false,
+        useGps: Boolean = true,
+        userStrideMeters: Float = 0.76f
+    ) {
+        stopGpsUpdates()
         lastLocation = null
         simulatedIndex = 0
+        strideMeters = when (activityType) {
+            "Jogging" -> userStrideMeters * 1.25f
+            "Hiking" -> userStrideMeters * 0.92f
+            else -> userStrideMeters
+        }
         _liveMetrics.value = WorkoutLiveMetrics(
             isRunning = true,
             isPaused = false,
@@ -74,10 +91,11 @@ class WorkoutLocationTracker(private val context: Context) : LocationListener {
             caloriesBurned = 0,
             routePoints = if (simulateMovement) listOf(simulatedBaseCoordinates[0]) else emptyList(),
             activityType = activityType,
-            isSimulated = simulateMovement
+            isSimulated = simulateMovement,
+            usesGps = useGps
         )
 
-        if (!simulateMovement) {
+        if (!simulateMovement && useGps) {
             requestGpsUpdates()
         }
     }
@@ -112,7 +130,9 @@ class WorkoutLocationTracker(private val context: Context) : LocationListener {
 
     fun resumeWorkout() {
         _liveMetrics.value = _liveMetrics.value.copy(isPaused = false)
-        if (!_liveMetrics.value.isSimulated) {
+        // Don't count the straight line between where we paused and where we resumed
+        lastLocation = null
+        if (!_liveMetrics.value.isSimulated && _liveMetrics.value.usesGps) {
             requestGpsUpdates()
         }
     }
@@ -178,12 +198,8 @@ class WorkoutLocationTracker(private val context: Context) : LocationListener {
         if (!current.isRunning || current.isPaused) return
 
         val newSteps = current.currentSteps + delta
-        val strideLength = when (current.activityType) {
-            "Jogging" -> 0.95f
-            "Hiking" -> 0.70f
-            else -> 0.76f
-        }
-        val addedDist = if (!current.isSimulated) delta * strideLength else 0f
+        // Simulated trails and GPS workouts measure distance from the route instead
+        val addedDist = if (!current.isSimulated && !current.usesGps) delta * strideMeters else 0f
         val newDist = current.distanceMeters + addedDist
         val km = newDist / 1000f
         val pace = if (km > 0.05f) (current.elapsedTimeSeconds / 60f) / km else 0f
@@ -199,7 +215,9 @@ class WorkoutLocationTracker(private val context: Context) : LocationListener {
 
     override fun onLocationChanged(location: Location) {
         val current = _liveMetrics.value
-        if (!current.isRunning || current.isPaused || current.isSimulated) return
+        if (!current.isRunning || current.isPaused || current.isSimulated || !current.usesGps) return
+        // Ignore coarse fixes; they add zig-zag jitter to both the route and the distance
+        if (location.hasAccuracy() && location.accuracy > 30f) return
 
         val point = LatLngPoint(location.latitude, location.longitude, location.time)
         val points = current.routePoints.toMutableList()
