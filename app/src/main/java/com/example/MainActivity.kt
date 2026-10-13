@@ -3,6 +3,7 @@ package com.example
 import android.Manifest
 import android.os.Build
 import android.os.Bundle
+import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
@@ -100,7 +101,11 @@ fun PulseStepApp(viewModel: MainHealthViewModel = viewModel()) {
     val cameraPermissionLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.RequestPermission()
     ) { granted ->
-        showPpgScanner = true
+        if (granted) {
+            showPpgScanner = true
+        } else {
+            Toast.makeText(context, "Camera permission is needed to measure your pulse", Toast.LENGTH_LONG).show()
+        }
     }
 
     // Android Sensor and Location Runtime Permissions
@@ -126,6 +131,10 @@ fun PulseStepApp(viewModel: MainHealthViewModel = viewModel()) {
         )
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
             permissionsToRequest.add(Manifest.permission.ACTIVITY_RECOGNITION)
+        }
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            // Lets the background step-tracking notification show
+            permissionsToRequest.add(Manifest.permission.POST_NOTIFICATIONS)
         }
         sensorPermissionLauncher.launch(permissionsToRequest.toTypedArray())
     }
@@ -277,7 +286,7 @@ fun PulseStepApp(viewModel: MainHealthViewModel = viewModel()) {
                     WorkoutScreen(
                         liveMetrics = uiState.liveWorkout,
                         recentWorkouts = uiState.recentWorkouts,
-                        onStartWorkout = { act, sim -> viewModel.startWorkout(act, sim) },
+                        onStartWorkout = { act, sim, useGps -> viewModel.startWorkout(act, sim, useGps) },
                         onPauseWorkout = { viewModel.pauseWorkout() },
                         onResumeWorkout = { viewModel.resumeWorkout() },
                         onFinishWorkout = { viewModel.finishWorkout() }

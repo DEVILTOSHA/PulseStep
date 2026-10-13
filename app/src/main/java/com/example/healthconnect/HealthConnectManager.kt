@@ -6,13 +6,14 @@ import androidx.health.connect.client.permission.HealthPermission
 import androidx.health.connect.client.records.BloodPressureRecord
 import androidx.health.connect.client.records.HeartRateRecord
 import androidx.health.connect.client.records.StepsRecord
+import androidx.health.connect.client.time.TimeRangeFilter
 import androidx.health.connect.client.units.Pressure
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import java.time.Instant
+import java.time.ZoneId
 import java.time.ZoneOffset
-import java.time.ZonedDateTime
 
 enum class HealthConnectStatus {
     CONNECTED,
@@ -59,7 +60,7 @@ class HealthConnectManager(private val context: Context) {
                     try {
                         val granted = client.permissionController.getGrantedPermissions()
                         if (granted.containsAll(permissions)) {
-                            _lastSyncMessage.value = "Synced with Google Health Connect"
+                            _lastSyncMessage.value = "Connected to Google Health Connect"
                             HealthConnectStatus.CONNECTED
                         } else {
                             _lastSyncMessage.value = "Tap to grant Health Connect permissions"
@@ -86,15 +87,25 @@ class HealthConnectManager(private val context: Context) {
         return status
     }
 
-    suspend fun syncStepsRecord(stepCount: Long, startTime: Instant, endTime: Instant): Boolean {
+    /**
+     * Writes one steps record covering [dayStart, end). Any steps this app already wrote for the same
+     * day are deleted first (Health Connect only lets an app delete its own records), so re-syncing
+     * replaces the day's total instead of adding to it.
+     */
+    suspend fun syncDailySteps(stepCount: Long, dayStart: Instant, dayEnd: Instant, end: Instant): Boolean {
         val client = healthConnectClient ?: return false
+        if (stepCount <= 0L || !end.isAfter(dayStart)) {
+            _lastSyncMessage.value = "No steps to sync yet today"
+            return false
+        }
         return try {
+            client.deleteRecords(StepsRecord::class, TimeRangeFilter.between(dayStart, dayEnd))
             val record = StepsRecord(
                 count = stepCount,
-                startTime = startTime,
-                startZoneOffset = ZoneOffset.UTC,
-                endTime = endTime,
-                endZoneOffset = ZoneOffset.UTC
+                startTime = dayStart,
+                startZoneOffset = localOffset(dayStart),
+                endTime = end,
+                endZoneOffset = localOffset(end)
             )
             client.insertRecords(listOf(record))
             _lastSyncMessage.value = "Synced $stepCount steps to Health Connect"
@@ -114,7 +125,7 @@ class HealthConnectManager(private val context: Context) {
         return try {
             val record = BloodPressureRecord(
                 time = time,
-                zoneOffset = ZoneOffset.UTC,
+                zoneOffset = localOffset(time),
                 systolic = Pressure.millimetersOfMercury(systolicMmHg),
                 diastolic = Pressure.millimetersOfMercury(diastolicMmHg)
             )
@@ -136,9 +147,9 @@ class HealthConnectManager(private val context: Context) {
             )
             val record = HeartRateRecord(
                 startTime = time.minusSeconds(1),
-                startZoneOffset = ZoneOffset.UTC,
+                startZoneOffset = localOffset(time.minusSeconds(1)),
                 endTime = time,
-                endZoneOffset = ZoneOffset.UTC,
+                endZoneOffset = localOffset(time),
                 samples = listOf(sample)
             )
             client.insertRecords(listOf(record))
@@ -150,8 +161,5 @@ class HealthConnectManager(private val context: Context) {
         }
     }
 
-    fun markSimulatedSyncSuccess() {
-        _syncStatus.value = HealthConnectStatus.CONNECTED
-        _lastSyncMessage.value = "All records synced with Google Health Connect"
-    }
+    private fun localOffset(instant: Instant): ZoneOffset = ZoneId.systemDefault().rules.getOffset(instant)
 }

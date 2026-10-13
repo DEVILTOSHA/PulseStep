@@ -17,7 +17,6 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
-import java.nio.ByteBuffer
 import java.util.concurrent.Executors
 import kotlin.math.PI
 import kotlin.math.sin
@@ -47,16 +46,18 @@ class CameraPpgManager(private val context: Context) {
     private var simulationJob: Job? = null
     private val coroutineScope = CoroutineScope(Dispatchers.Default)
 
-    // Signal processing buffers
-    private val rollingRedValues = ArrayDeque<Double>()
-    private val maxBufferLength = 60
-    private var lastPeakTime = 0L
-    private val detectedIntervals = mutableListOf<Long>()
+    // Signal processing state. Only touched from analysisExecutor, except resets in startScanning()
+    // which happen before the analyzer is bound.
+    private val detector = PpgPeakDetector()
     private val wavePointsHistory = ArrayDeque<Float>()
     private val maxWavePoints = 80
 
     private var scanStartTime = 0L
     private val scanDurationMs = 15000L
+
+    // The 15 s countdown only runs while the finger stays on the lens
+    private var coveredSinceMs = -1L
+    @Volatile private var scanFinished = false
 
     fun startScanning(lifecycleOwner: LifecycleOwner, simulate: Boolean = false) {
         stopScanning()
@@ -69,9 +70,10 @@ class CameraPpgManager(private val context: Context) {
             isSimulated = simulate
         )
         scanStartTime = System.currentTimeMillis()
-        rollingRedValues.clear()
-        detectedIntervals.clear()
+        detector.reset()
         wavePointsHistory.clear()
+        coveredSinceMs = -1L
+        scanFinished = false
 
         if (simulate) {
             startSimulationLoop()
@@ -107,40 +109,50 @@ class CameraPpgManager(private val context: Context) {
                 // Turn on camera torch (flashlight)
                 camera?.cameraControl?.enableTorch(true)
             } catch (_: Exception) {
-                // If camera setup fails (e.g. on emulator without camera hardware), fallback to simulation
+                // If camera setup fails (e.g. on emulator without camera hardware), fallback to simulation.
+                // The state's isSimulated flag tells the UI, which then won't save the result.
                 startSimulationLoop()
             }
         }, ContextCompat.getMainExecutor(context))
     }
 
     private fun processImageFrame(imageProxy: ImageProxy) {
+        if (scanFinished) {
+            imageProxy.close()
+            return
+        }
         val plane = imageProxy.planes.firstOrNull() ?: run {
             imageProxy.close()
             return
         }
 
-        val buffer: ByteBuffer = plane.buffer
-        val totalBytes = buffer.remaining()
-        val pixelStride = plane.pixelStride.coerceAtLeast(1)
+        // Average the central half of the frame (where the fingertip is), honouring row padding.
+        val buffer = plane.buffer
+        val rowStride = plane.rowStride
+        val pixelStride = plane.pixelStride.coerceAtLeast(4) // RGBA_8888
+        val width = imageProxy.width
+        val height = imageProxy.height
+        val frameTimeMs = imageProxy.imageInfo.timestamp / 1_000_000L
 
-        // Sample center pixels to compute average R, G, B
         var sumR = 0L
         var sumG = 0L
         var sumB = 0L
         var count = 0L
-
-        val step = (pixelStride * 8).coerceAtLeast(4)
-        var i = 0
-        while (i < totalBytes - 3) {
-            val r = buffer.get(i).toInt() and 0xFF
-            val g = buffer.get(i + 1).toInt() and 0xFF
-            val b = buffer.get(i + 2).toInt() and 0xFF
-
-            sumR += r
-            sumG += g
-            sumB += b
-            count++
-            i += step
+        val sampleStep = 4
+        var y = height / 4
+        while (y < height * 3 / 4) {
+            var x = width / 4
+            while (x < width * 3 / 4) {
+                val idx = y * rowStride + x * pixelStride
+                if (idx + 2 < buffer.limit()) {
+                    sumR += buffer.get(idx).toInt() and 0xFF
+                    sumG += buffer.get(idx + 1).toInt() and 0xFF
+                    sumB += buffer.get(idx + 2).toInt() and 0xFF
+                    count++
+                }
+                x += sampleStep
+            }
+            y += sampleStep
         }
         imageProxy.close()
 
@@ -150,72 +162,63 @@ class CameraPpgManager(private val context: Context) {
         val avgG = sumG.toDouble() / count
         val avgB = sumB.toDouble() / count
 
-        // Check finger covering: high red content compared to green and blue
+        // Finger over a lit flash: frame is bright and strongly red
         val isCovered = avgR > 80.0 && (avgR / (avgG + avgB + 1.0)) > 1.6
 
-        val now = System.currentTimeMillis()
-        val elapsed = now - scanStartTime
-        val remaining = ((scanDurationMs - elapsed) / 1000L).coerceAtLeast(0L).toInt()
-        val progress = ((elapsed.toFloat() / scanDurationMs) * 100f).toInt().coerceIn(0, 100)
-
         if (!isCovered) {
+            // Lifting the finger restarts the measurement; stale beats would skew the result
+            coveredSinceMs = -1L
+            detector.reset()
+            wavePointsHistory.clear()
             _scanState.value = _scanState.value.copy(
                 isFingerCovered = false,
-                remainingSeconds = remaining,
-                progressPercent = progress
+                currentBpm = 0,
+                remainingSeconds = (scanDurationMs / 1000L).toInt(),
+                progressPercent = 0,
+                wavePoints = emptyList()
             )
             return
         }
 
-        // Add to red buffer
-        rollingRedValues.addLast(avgR)
-        if (rollingRedValues.size > maxBufferLength) {
-            rollingRedValues.removeFirst()
-        }
+        if (coveredSinceMs < 0L) coveredSinceMs = frameTimeMs
+        var coveredMs = frameTimeMs - coveredSinceMs
 
-        // Compute baseline (DC component)
-        val baseline = rollingRedValues.average()
-        val acSignal = avgR - baseline
-
-        // Normalize AC signal for visualization
-        val normalizedWave = (acSignal / 15.0).toFloat().coerceIn(-1f, 1f)
-        wavePointsHistory.addLast(normalizedWave)
+        val result = detector.addSample(avgR, frameTimeMs)
+        wavePointsHistory.addLast(result.waveValue)
         if (wavePointsHistory.size > maxWavePoints) {
             wavePointsHistory.removeFirst()
         }
 
-        // Peak detection
-        var currentBpm = _scanState.value.currentBpm
-        if (acSignal > 1.8 && (now - lastPeakTime) > 350L) { // Min 350ms = max 171 BPM
-            if (lastPeakTime > 0L) {
-                val interval = now - lastPeakTime
-                if (interval in 350..1500) { // Valid 40 to 171 BPM range
-                    detectedIntervals.add(interval)
-                    if (detectedIntervals.size > 8) detectedIntervals.removeAt(0)
-                    val avgInterval = detectedIntervals.average()
-                    if (avgInterval > 0) {
-                        currentBpm = (60000.0 / avgInterval).toInt()
-                    }
-                }
+        val bpm = result.bpm
+        val hasReliableBpm = bpm in 40..180
+        var isComplete = false
+        if (coveredMs >= scanDurationMs) {
+            if (hasReliableBpm) {
+                isComplete = true
+            } else {
+                // 15 s of contact but no steady rhythm (movement, pressing too hard): start a fresh window
+                coveredSinceMs = frameTimeMs
+                coveredMs = 0L
+                detector.reset()
             }
-            lastPeakTime = now
         }
-
-        val isComplete = elapsed >= scanDurationMs && currentBpm > 45
+        val remaining = ((scanDurationMs - coveredMs + 999L) / 1000L).coerceAtLeast(0L).toInt()
+        val progress = ((coveredMs.toFloat() / scanDurationMs) * 100f).toInt().coerceIn(0, 100)
 
         _scanState.value = _scanState.value.copy(
             isFingerCovered = true,
-            currentBpm = currentBpm,
-            pulseStrength = (acSignal.toFloat() / 10f).coerceIn(0f, 1f),
+            currentBpm = if (hasReliableBpm) bpm else 0,
+            pulseStrength = if (result.isPeak) 1f else (result.waveValue.coerceAtLeast(0f)),
             remainingSeconds = remaining,
             progressPercent = progress,
             isScanComplete = isComplete,
-            finalBpm = if (isComplete) currentBpm else 0,
+            finalBpm = if (isComplete) bpm else 0,
             wavePoints = wavePointsHistory.toList()
         )
 
         if (isComplete) {
-            stopCamera()
+            scanFinished = true
+            ContextCompat.getMainExecutor(context).execute { stopCamera() }
         }
     }
 
@@ -242,16 +245,17 @@ class CameraPpgManager(private val context: Context) {
                 }
 
                 val isComplete = elapsed >= scanDurationMs
+                val bpm = baseBpm + (sin(phase * 0.1f) * 2).toInt()
 
                 _scanState.value = PpgScanState(
                     isScanning = true,
                     isFingerCovered = true,
-                    currentBpm = baseBpm + (sin(phase * 0.1f) * 2).toInt(),
+                    currentBpm = bpm,
                     pulseStrength = 0.85f,
                     progressPercent = progress,
                     remainingSeconds = remaining,
                     isScanComplete = isComplete,
-                    finalBpm = if (isComplete) baseBpm else 0,
+                    finalBpm = if (isComplete) bpm else 0,
                     isSimulated = true,
                     wavePoints = wavePointsHistory.toList()
                 )

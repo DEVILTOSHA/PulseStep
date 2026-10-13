@@ -77,6 +77,8 @@ secrets {
   propertiesFileName = ".env"
   defaultPropertiesFileName = ".env.example"
   ignoreList.add("FIREBASE_APPCHECK_DEBUG_TOKEN")
+  // Gemini is called through Firebase AI Logic; keep any local key out of BuildConfig and the APK.
+  ignoreList.add("GEMINI_API_KEY")
 }
 
 googleServices { missingGoogleServicesStrategy = MissingGoogleServicesStrategy.WARN }

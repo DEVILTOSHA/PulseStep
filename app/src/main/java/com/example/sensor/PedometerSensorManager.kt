@@ -113,8 +113,4 @@ class PedometerSensorManager(
     override fun onAccuracyChanged(sensor: Sensor?, accuracy: Int) {
         // No-op
     }
-
-    fun injectSimulatedSteps(count: Int) {
-        onStepDetected(count)
-    }
 }
