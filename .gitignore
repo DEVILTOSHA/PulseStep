@@ -16,3 +16,6 @@
 local.properties
 .env
 debug.keystore
+
+# Private educational documentation
+EDUCATIONAL_GUIDE.md
