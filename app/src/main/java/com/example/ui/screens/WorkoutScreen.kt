@@ -1,5 +1,6 @@
 package com.example.ui.screens
 
+import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -50,9 +51,18 @@ import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import android.Manifest
+import android.content.Intent
+import android.content.pm.PackageManager
+import android.provider.Settings
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.ui.platform.LocalContext
+import androidx.core.content.ContextCompat
 import com.example.data.local.WorkoutSession
 import com.example.location.WorkoutLiveMetrics
 import com.example.ui.components.EmergencySosDialog
+import com.example.ui.components.GoogleMapRouteView
 import com.example.ui.components.RouteMapCanvas
 import com.example.ui.theme.CoralHeart
 import com.example.ui.theme.EmeraldPrimary
@@ -65,10 +75,11 @@ import java.util.Locale
 fun WorkoutScreen(
     liveMetrics: WorkoutLiveMetrics,
     recentWorkouts: List<WorkoutSession>,
-    onStartWorkout: (activityType: String, simulate: Boolean, useGps: Boolean) -> Unit,
+    onStartWorkout: (activityType: String, simulate: Boolean) -> Unit,
     onPauseWorkout: () -> Unit,
     onResumeWorkout: () -> Unit,
     onFinishWorkout: () -> Unit,
+    onRefreshLocation: () -> Unit = {},
     modifier: Modifier = Modifier
 ) {
     var selectedActivity by remember { mutableStateOf("Walking") }
@@ -76,6 +87,24 @@ fun WorkoutScreen(
     var isGpsEnabled by remember { mutableStateOf(true) }
     var showSosDialog by remember { mutableStateOf(false) }
     val activities = listOf("Walking", "Jogging", "Hiking")
+
+    val context = LocalContext.current
+    var hasLocationPermission by remember {
+        mutableStateOf(
+            ContextCompat.checkSelfPermission(context, Manifest.permission.ACCESS_FINE_LOCATION) == PackageManager.PERMISSION_GRANTED ||
+            ContextCompat.checkSelfPermission(context, Manifest.permission.ACCESS_COARSE_LOCATION) == PackageManager.PERMISSION_GRANTED
+        )
+    }
+
+    val locationPermissionLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.RequestMultiplePermissions()
+    ) { perms ->
+        hasLocationPermission = perms[Manifest.permission.ACCESS_FINE_LOCATION] == true ||
+                perms[Manifest.permission.ACCESS_COARSE_LOCATION] == true
+        if (hasLocationPermission) {
+            onRefreshLocation()
+        }
+    }
 
     LazyColumn(
         modifier = modifier
@@ -104,26 +133,28 @@ fun WorkoutScreen(
                         )
                     }
 
-                    // Safety SOS is always reachable; calling 112 doesn't need GPS
-                    Button(
-                        onClick = { showSosDialog = true },
-                        colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFFF3838)),
-                        shape = RoundedCornerShape(12.dp),
-                        modifier = Modifier.testTag("workout_sos_button")
-                    ) {
-                        Icon(
-                            imageVector = Icons.Default.Warning,
-                            contentDescription = "Emergency SOS",
-                            tint = Color.White,
-                            modifier = Modifier.size(18.dp)
-                        )
-                        Spacer(modifier = Modifier.width(6.dp))
-                        Text(
-                            text = "SOS",
-                            color = Color.White,
-                            fontWeight = FontWeight.ExtraBold,
-                            fontSize = 13.sp
-                        )
+                    // Operable Safety SOS button: ONLY pops up if GPS is enabled!
+                    AnimatedVisibility(visible = isGpsEnabled) {
+                        Button(
+                            onClick = { showSosDialog = true },
+                            colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFFF3838)),
+                            shape = RoundedCornerShape(12.dp),
+                            modifier = Modifier.testTag("workout_sos_button")
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.Warning,
+                                contentDescription = "Emergency SOS",
+                                tint = Color.White,
+                                modifier = Modifier.size(18.dp)
+                            )
+                            Spacer(modifier = Modifier.width(6.dp))
+                            Text(
+                                text = "SOS",
+                                color = Color.White,
+                                fontWeight = FontWeight.ExtraBold,
+                                fontSize = 13.sp
+                            )
+                        }
                     }
                 }
 
@@ -159,11 +190,7 @@ fun WorkoutScreen(
                                     color = if (isGpsEnabled) EmeraldPrimary else MaterialTheme.colorScheme.onSurfaceVariant
                                 )
                                 Text(
-                                    text = when {
-                                        liveMetrics.isRunning -> "Applies from your next workout"
-                                        isGpsEnabled -> "Route & distance from GPS; SOS shares your location"
-                                        else -> "Distance from steps × stride; SOS can't share your location"
-                                    },
+                                    text = if (isGpsEnabled) "Safety SOS & Real-Time Route Active" else "Enable GPS to activate live path and Safety SOS",
                                     fontSize = 10.sp,
                                     color = MaterialTheme.colorScheme.onSurfaceVariant
                                 )
@@ -172,18 +199,70 @@ fun WorkoutScreen(
                         Switch(
                             checked = isGpsEnabled,
                             onCheckedChange = { isGpsEnabled = it },
-                            enabled = !liveMetrics.isRunning,
                             colors = SwitchDefaults.colors(checkedThumbColor = EmeraldPrimary),
                             modifier = Modifier.testTag("workout_gps_toggle")
                         )
                     }
                 }
+
+                // Permission Warning Card if not granted
+                if (!hasLocationPermission && isGpsEnabled) {
+                    Card(
+                        modifier = Modifier.fillMaxWidth(),
+                        shape = RoundedCornerShape(12.dp),
+                        colors = CardDefaults.cardColors(containerColor = Color(0xFFF59E0B).copy(alpha = 0.15f)),
+                        border = androidx.compose.foundation.BorderStroke(1.dp, Color(0xFFF59E0B))
+                    ) {
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(12.dp),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Column(modifier = Modifier.weight(1f)) {
+                                Text(
+                                    text = "Location Permission Needed",
+                                    fontSize = 12.sp,
+                                    fontWeight = FontWeight.Bold,
+                                    color = Color(0xFFF59E0B)
+                                )
+                                Text(
+                                    text = "Allow location access to enable live GPS pinpoint tracking.",
+                                    fontSize = 11.sp,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                            }
+                            Button(
+                                onClick = {
+                                    locationPermissionLauncher.launch(
+                                        arrayOf(
+                                            Manifest.permission.ACCESS_FINE_LOCATION,
+                                            Manifest.permission.ACCESS_COARSE_LOCATION
+                                        )
+                                    )
+                                },
+                                colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFF59E0B)),
+                                shape = RoundedCornerShape(8.dp),
+                                modifier = Modifier.height(34.dp)
+                            ) {
+                                Text("Allow", fontSize = 11.sp, fontWeight = FontWeight.Bold, color = Color.Black)
+                            }
+                        }
+                    }
+                }
             }
         }
 
-        // Live Route Map Canvas
+        // Interactive Google Maps & Route Tracking
         item {
-            RouteMapCanvas(routePoints = liveMetrics.routePoints)
+            GoogleMapRouteView(
+                routePoints = liveMetrics.routePoints,
+                currentPosition = liveMetrics.currentPosition,
+                isWorkoutRunning = liveMetrics.isRunning && !liveMetrics.isPaused,
+                accuracyMeters = liveMetrics.accuracyMeters,
+                onRefreshLocation = onRefreshLocation
+            )
         }
 
         // Live Metrics Dashboard Card
@@ -340,7 +419,7 @@ fun WorkoutScreen(
                     }
 
                     Button(
-                        onClick = { onStartWorkout(selectedActivity, simulateMovement, isGpsEnabled) },
+                        onClick = { onStartWorkout(selectedActivity, simulateMovement) },
                         modifier = Modifier
                             .fillMaxWidth()
                             .height(52.dp)
@@ -437,8 +516,7 @@ fun WorkoutScreen(
 
     if (showSosDialog) {
         EmergencySosDialog(
-            // Simulated trail points are fake coordinates and must never go into a distress message
-            currentGpsPoint = if (liveMetrics.isSimulated) null else liveMetrics.routePoints.lastOrNull(),
+            currentGpsPoint = liveMetrics.currentPosition ?: liveMetrics.routePoints.lastOrNull(),
             onDismiss = { showSosDialog = false }
         )
     }

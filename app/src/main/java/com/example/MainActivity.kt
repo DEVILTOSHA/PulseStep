@@ -3,7 +3,6 @@ package com.example
 import android.Manifest
 import android.os.Build
 import android.os.Bundle
-import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
@@ -101,11 +100,7 @@ fun PulseStepApp(viewModel: MainHealthViewModel = viewModel()) {
     val cameraPermissionLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.RequestPermission()
     ) { granted ->
-        if (granted) {
-            showPpgScanner = true
-        } else {
-            Toast.makeText(context, "Camera permission is needed to measure your pulse", Toast.LENGTH_LONG).show()
-        }
+        showPpgScanner = true
     }
 
     // Android Sensor and Location Runtime Permissions
@@ -114,6 +109,12 @@ fun PulseStepApp(viewModel: MainHealthViewModel = viewModel()) {
     ) { permissions ->
         if (permissions[Manifest.permission.ACTIVITY_RECOGNITION] == true) {
             viewModel.startSensorTracking()
+        }
+        if (permissions[Manifest.permission.ACCESS_FINE_LOCATION] == true ||
+            permissions[Manifest.permission.ACCESS_COARSE_LOCATION] == true
+        ) {
+            viewModel.workoutTracker.fetchImmediateLastKnownLocation()
+            viewModel.workoutTracker.startLocationUpdates()
         }
     }
 
@@ -125,16 +126,26 @@ fun PulseStepApp(viewModel: MainHealthViewModel = viewModel()) {
     }
 
     LaunchedEffect(Unit) {
+        val fineGranted = androidx.core.content.ContextCompat.checkSelfPermission(
+            context,
+            Manifest.permission.ACCESS_FINE_LOCATION
+        ) == android.content.pm.PackageManager.PERMISSION_GRANTED
+        val coarseGranted = androidx.core.content.ContextCompat.checkSelfPermission(
+            context,
+            Manifest.permission.ACCESS_COARSE_LOCATION
+        ) == android.content.pm.PackageManager.PERMISSION_GRANTED
+
+        if (fineGranted || coarseGranted) {
+            viewModel.workoutTracker.fetchImmediateLastKnownLocation()
+            viewModel.workoutTracker.startLocationUpdates()
+        }
+
         val permissionsToRequest = mutableListOf(
             Manifest.permission.ACCESS_FINE_LOCATION,
             Manifest.permission.ACCESS_COARSE_LOCATION
         )
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
             permissionsToRequest.add(Manifest.permission.ACTIVITY_RECOGNITION)
-        }
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-            // Lets the background step-tracking notification show
-            permissionsToRequest.add(Manifest.permission.POST_NOTIFICATIONS)
         }
         sensorPermissionLauncher.launch(permissionsToRequest.toTypedArray())
     }
@@ -286,10 +297,14 @@ fun PulseStepApp(viewModel: MainHealthViewModel = viewModel()) {
                     WorkoutScreen(
                         liveMetrics = uiState.liveWorkout,
                         recentWorkouts = uiState.recentWorkouts,
-                        onStartWorkout = { act, sim, useGps -> viewModel.startWorkout(act, sim, useGps) },
+                        onStartWorkout = { act, sim -> viewModel.startWorkout(act, sim) },
                         onPauseWorkout = { viewModel.pauseWorkout() },
                         onResumeWorkout = { viewModel.resumeWorkout() },
-                        onFinishWorkout = { viewModel.finishWorkout() }
+                        onFinishWorkout = { viewModel.finishWorkout() },
+                        onRefreshLocation = {
+                            viewModel.workoutTracker.fetchImmediateLastKnownLocation()
+                            viewModel.workoutTracker.startLocationUpdates()
+                        }
                     )
                 }
                 NavigationTab.VITALS -> {

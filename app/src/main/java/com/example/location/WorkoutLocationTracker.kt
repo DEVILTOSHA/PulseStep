@@ -2,17 +2,22 @@ package com.example.location
 
 import android.annotation.SuppressLint
 import android.content.Context
+import android.content.pm.PackageManager
 import android.location.Location
 import android.location.LocationListener
 import android.location.LocationManager
 import android.os.Bundle
+import android.os.Looper
+import androidx.core.content.ContextCompat
+import com.google.android.gms.location.FusedLocationProviderClient
+import com.google.android.gms.location.LocationCallback
+import com.google.android.gms.location.LocationRequest
+import com.google.android.gms.location.LocationResult
+import com.google.android.gms.location.LocationServices
+import com.google.android.gms.location.Priority
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
-import kotlin.math.atan2
-import kotlin.math.cos
-import kotlin.math.sin
-import kotlin.math.sqrt
 
 data class LatLngPoint(
     val latitude: Double,
@@ -26,62 +31,193 @@ data class WorkoutLiveMetrics(
     val elapsedTimeSeconds: Long = 0,
     val distanceMeters: Float = 0f,
     val currentSteps: Int = 0,
-    val currentPaceMinPerKm: Float = 0f, // e.g. 5.5 = 5m 30s
+    val currentPaceMinPerKm: Float = 0f,
     val caloriesBurned: Int = 0,
     val routePoints: List<LatLngPoint> = emptyList(),
     val activityType: String = "Walking",
     val isSimulated: Boolean = false,
-    val usesGps: Boolean = true
+    val currentPosition: LatLngPoint? = null,
+    val isGpsLocked: Boolean = false,
+    val accuracyMeters: Float = 0f,
+    val provider: String = "GPS"
 )
 
+/**
+ * High-Precision GPS & Location Tracker for PulseStep.
+ * Connects directly to Google Play Services FusedLocationProviderClient (High Accuracy)
+ * with concurrent fallback to Android native LocationManager (GPS, Network & Passive providers).
+ * Never hardcodes artificial coordinates when real user coordinates are available.
+ */
 class WorkoutLocationTracker(private val context: Context) : LocationListener {
 
+    private val fusedClient: FusedLocationProviderClient = LocationServices.getFusedLocationProviderClient(context)
     private val locationManager = context.getSystemService(Context.LOCATION_SERVICE) as? LocationManager
+
     private val _liveMetrics = MutableStateFlow(WorkoutLiveMetrics())
     val liveMetrics: StateFlow<WorkoutLiveMetrics> = _liveMetrics.asStateFlow()
 
     private var lastLocation: Location? = null
-    private var simulatedIndex = 0
-    private var strideMeters = 0.76f
+    private var isFusedTrackingActive = false
+    private var isLocationManagerTrackingActive = false
+    private var simulationStepCount = 0
 
-    // Realistic park walking path coordinates in India (Lodhi Gardens / Central Park loop) for simulation fallback
-    private val simulatedBaseCoordinates = listOf(
-        LatLngPoint(28.593320, 77.219750),
-        LatLngPoint(28.593840, 77.220310),
-        LatLngPoint(28.594410, 77.220940),
-        LatLngPoint(28.595120, 77.221520),
-        LatLngPoint(28.595830, 77.221980),
-        LatLngPoint(28.596610, 77.222340),
-        LatLngPoint(28.597320, 77.221870),
-        LatLngPoint(28.597910, 77.221120),
-        LatLngPoint(28.598350, 77.220260),
-        LatLngPoint(28.597980, 77.219410),
-        LatLngPoint(28.597240, 77.218720),
-        LatLngPoint(28.596350, 77.218290),
-        LatLngPoint(28.595410, 77.218380),
-        LatLngPoint(28.594520, 77.218790),
-        LatLngPoint(28.593820, 77.219210)
-    )
+    private val locationCallback = object : LocationCallback() {
+        override fun onLocationResult(result: LocationResult) {
+            val location = result.lastLocation ?: return
+            handleNewLocation(location, "Google Play Services")
+        }
+    }
+
+    init {
+        // Attempt initial location query on initialization
+        fetchImmediateLastKnownLocation()
+        startLocationUpdates()
+    }
+
+    fun hasLocationPermission(): Boolean {
+        val fine = ContextCompat.checkSelfPermission(
+            context,
+            android.Manifest.permission.ACCESS_FINE_LOCATION
+        ) == PackageManager.PERMISSION_GRANTED
+        val coarse = ContextCompat.checkSelfPermission(
+            context,
+            android.Manifest.permission.ACCESS_COARSE_LOCATION
+        ) == PackageManager.PERMISSION_GRANTED
+        return fine || coarse
+    }
+
+    fun isGpsProviderEnabled(): Boolean {
+        return try {
+            locationManager?.isProviderEnabled(LocationManager.GPS_PROVIDER) == true ||
+                    locationManager?.isProviderEnabled(LocationManager.NETWORK_PROVIDER) == true
+        } catch (_: Exception) {
+            false
+        }
+    }
 
     /**
-     * Distance comes from exactly one source: GPS fixes when [useGps] is on, otherwise steps × stride.
-     * [userStrideMeters] is the walking stride from the user's profile.
+     * Actively fetches the user's pinpoint location right now using all available providers.
      */
-    fun startWorkout(
-        activityType: String,
-        simulateMovement: Boolean = false,
-        useGps: Boolean = true,
-        userStrideMeters: Float = 0.76f
-    ) {
-        stopGpsUpdates()
-        lastLocation = null
-        simulatedIndex = 0
-        strideMeters = when (activityType) {
-            "Jogging" -> userStrideMeters * 1.25f
-            "Hiking" -> userStrideMeters * 0.92f
-            else -> userStrideMeters
+    @SuppressLint("MissingPermission")
+    fun fetchImmediateLastKnownLocation() {
+        if (!hasLocationPermission()) return
+
+        // 1. Google Play Services getCurrentLocation (forces fresh hardware/network satellite fix)
+        try {
+            fusedClient.getCurrentLocation(Priority.PRIORITY_HIGH_ACCURACY, null)
+                .addOnSuccessListener { loc ->
+                    if (loc != null) {
+                        handleNewLocation(loc, "Google Fused (High Accuracy)")
+                    }
+                }
+        } catch (_: Exception) {}
+
+        try {
+            fusedClient.getCurrentLocation(Priority.PRIORITY_BALANCED_POWER_ACCURACY, null)
+                .addOnSuccessListener { loc ->
+                    if (loc != null && _liveMetrics.value.currentPosition == null) {
+                        handleNewLocation(loc, "Google Fused (Balanced)")
+                    }
+                }
+        } catch (_: Exception) {}
+
+        // 2. Google Play Services cached lastLocation (instantaneous response)
+        try {
+            fusedClient.lastLocation.addOnSuccessListener { loc ->
+                if (loc != null && _liveMetrics.value.currentPosition == null) {
+                    handleNewLocation(loc, "Google Fused Cache")
+                }
+            }
+        } catch (_: Exception) {}
+
+        // 3. Android LocationManager system providers
+        try {
+            val lastGps = locationManager?.getLastKnownLocation(LocationManager.GPS_PROVIDER)
+            val lastNet = locationManager?.getLastKnownLocation(LocationManager.NETWORK_PROVIDER)
+            val lastPassive = locationManager?.getLastKnownLocation(LocationManager.PASSIVE_PROVIDER)
+
+            val bestCandidate = listOfNotNull(lastGps, lastNet, lastPassive)
+                .maxByOrNull { it.time }
+
+            if (bestCandidate != null && _liveMetrics.value.currentPosition == null) {
+                handleNewLocation(bestCandidate, "Native Provider (${bestCandidate.provider})")
+            }
+        } catch (_: Exception) {}
+    }
+
+    /**
+     * Registers continuous high-accuracy location tracking listeners.
+     */
+    @SuppressLint("MissingPermission")
+    fun startLocationUpdates() {
+        if (!hasLocationPermission()) return
+
+        // 1. Google Play Services Fused Location Provider
+        if (!isFusedTrackingActive) {
+            try {
+                val locationRequest = LocationRequest.Builder(
+                    Priority.PRIORITY_HIGH_ACCURACY,
+                    1000L // 1-second update interval
+                ).apply {
+                    setMinUpdateIntervalMillis(500L)
+                    setMinUpdateDistanceMeters(0f) // Report any micro-movement
+                    setWaitForAccurateLocation(false)
+                }.build()
+
+                fusedClient.requestLocationUpdates(
+                    locationRequest,
+                    locationCallback,
+                    Looper.getMainLooper()
+                ).addOnSuccessListener {
+                    isFusedTrackingActive = true
+                }.addOnFailureListener {
+                    isFusedTrackingActive = false
+                }
+            } catch (_: Exception) {
+                isFusedTrackingActive = false
+            }
         }
-        _liveMetrics.value = WorkoutLiveMetrics(
+
+        // 2. Android Native LocationManager concurrent listeners
+        if (!isLocationManagerTrackingActive && locationManager != null) {
+            try {
+                if (locationManager.isProviderEnabled(LocationManager.GPS_PROVIDER)) {
+                    locationManager.requestLocationUpdates(
+                        LocationManager.GPS_PROVIDER,
+                        1000L,
+                        0f,
+                        this,
+                        Looper.getMainLooper()
+                    )
+                }
+                if (locationManager.isProviderEnabled(LocationManager.NETWORK_PROVIDER)) {
+                    locationManager.requestLocationUpdates(
+                        LocationManager.NETWORK_PROVIDER,
+                        1000L,
+                        0f,
+                        this,
+                        Looper.getMainLooper()
+                    )
+                }
+                isLocationManagerTrackingActive = true
+            } catch (_: Exception) {
+                isLocationManagerTrackingActive = false
+            }
+        }
+    }
+
+    fun startWorkout(activityType: String, simulateMovement: Boolean = false) {
+        lastLocation = null
+        simulationStepCount = 0
+
+        val currentPos = _liveMetrics.value.currentPosition
+        val initialPoints = if (currentPos != null) {
+            listOf(currentPos)
+        } else {
+            emptyList()
+        }
+
+        _liveMetrics.value = _liveMetrics.value.copy(
             isRunning = true,
             isPaused = false,
             elapsedTimeSeconds = 0,
@@ -89,60 +225,37 @@ class WorkoutLocationTracker(private val context: Context) : LocationListener {
             currentSteps = 0,
             currentPaceMinPerKm = 0f,
             caloriesBurned = 0,
-            routePoints = if (simulateMovement) listOf(simulatedBaseCoordinates[0]) else emptyList(),
+            routePoints = initialPoints,
             activityType = activityType,
             isSimulated = simulateMovement,
-            usesGps = useGps
+            currentPosition = currentPos
         )
 
-        if (!simulateMovement && useGps) {
-            requestGpsUpdates()
-        }
-    }
-
-    @SuppressLint("MissingPermission")
-    private fun requestGpsUpdates() {
-        try {
-            if (locationManager != null && locationManager.isProviderEnabled(LocationManager.GPS_PROVIDER)) {
-                locationManager.requestLocationUpdates(
-                    LocationManager.GPS_PROVIDER,
-                    2000L,
-                    2f,
-                    this
-                )
-            } else if (locationManager != null && locationManager.isProviderEnabled(LocationManager.NETWORK_PROVIDER)) {
-                locationManager.requestLocationUpdates(
-                    LocationManager.NETWORK_PROVIDER,
-                    2000L,
-                    2f,
-                    this
-                )
-            }
-        } catch (_: SecurityException) {
-            // Handled gracefully, user may not have granted permissions yet
-        }
+        // Make sure listeners are active
+        startLocationUpdates()
+        fetchImmediateLastKnownLocation()
     }
 
     fun pauseWorkout() {
         _liveMetrics.value = _liveMetrics.value.copy(isPaused = true)
-        stopGpsUpdates()
     }
 
     fun resumeWorkout() {
         _liveMetrics.value = _liveMetrics.value.copy(isPaused = false)
-        // Don't count the straight line between where we paused and where we resumed
-        lastLocation = null
-        if (!_liveMetrics.value.isSimulated && _liveMetrics.value.usesGps) {
-            requestGpsUpdates()
-        }
+        startLocationUpdates()
     }
 
     fun stopWorkout() {
         _liveMetrics.value = _liveMetrics.value.copy(isRunning = false, isPaused = false)
-        stopGpsUpdates()
     }
 
-    private fun stopGpsUpdates() {
+    fun stopAllTracking() {
+        isFusedTrackingActive = false
+        isLocationManagerTrackingActive = false
+        try {
+            fusedClient.removeLocationUpdates(locationCallback)
+        } catch (_: Exception) {}
+
         try {
             locationManager?.removeUpdates(this)
         } catch (_: Exception) {}
@@ -155,22 +268,27 @@ class WorkoutLocationTracker(private val context: Context) : LocationListener {
         val newTime = current.elapsedTimeSeconds + 1
 
         if (current.isSimulated) {
-            // Advance along simulated trail every ~3 seconds
-            var newDist = current.distanceMeters
-            var newSteps = current.currentSteps
+            // Generate simulated movement around the user's real location (or default starting point if no location)
+            val baseLat = current.currentPosition?.latitude ?: 19.0760 // User's real location, or default if none
+            val baseLng = current.currentPosition?.longitude ?: 72.8777
+
+            simulationStepCount++
+            // Create a realistic outdoor loop walk
+            val angle = (simulationStepCount * 0.15) % (2 * Math.PI)
+            val radius = 0.00045 + (0.00015 * Math.sin(angle * 3))
+            val nextLat = baseLat + (radius * Math.cos(angle))
+            val nextLng = baseLng + (radius * Math.sin(angle))
+            val nextPoint = LatLngPoint(nextLat, nextLng)
+
             val points = current.routePoints.toMutableList()
+            points.add(nextPoint)
 
-            if (newTime % 3L == 0L) {
-                simulatedIndex = (simulatedIndex + 1) % simulatedBaseCoordinates.size
-                val nextPt = simulatedBaseCoordinates[simulatedIndex]
-                points.add(nextPt)
-                newDist += 18.5f // ~18.5 meters every 3s (~6.1 m/s jog or brisk walk)
-                newSteps += 24
-            }
-
+            val addedDist = 1.35f // ~1.35m per second (~4.8 km/h walking pace)
+            val newDist = current.distanceMeters + addedDist
+            val newSteps = current.currentSteps + 2
             val km = newDist / 1000f
-            val pace = if (km > 0.05f) (newTime / 60f) / km else 0f
-            val cals = (newSteps * 0.048f + (newDist * 0.035f)).toInt()
+            val pace = if (km > 0.02f) (newTime / 60f) / km else 0f
+            val cals = (newSteps * 0.045f + (newDist * 0.035f)).toInt()
 
             _liveMetrics.value = current.copy(
                 elapsedTimeSeconds = newTime,
@@ -178,11 +296,15 @@ class WorkoutLocationTracker(private val context: Context) : LocationListener {
                 currentSteps = newSteps,
                 currentPaceMinPerKm = pace,
                 caloriesBurned = cals,
-                routePoints = points
+                routePoints = points,
+                currentPosition = nextPoint,
+                isGpsLocked = true,
+                accuracyMeters = 3.5f,
+                provider = "Simulation"
             )
         } else {
             val km = current.distanceMeters / 1000f
-            val pace = if (km > 0.05f) (newTime / 60f) / km else 0f
+            val pace = if (km > 0.02f) (newTime / 60f) / km else 0f
             val cals = (current.currentSteps * 0.045f + (current.distanceMeters * 0.032f)).toInt()
 
             _liveMetrics.value = current.copy(
@@ -198,11 +320,15 @@ class WorkoutLocationTracker(private val context: Context) : LocationListener {
         if (!current.isRunning || current.isPaused) return
 
         val newSteps = current.currentSteps + delta
-        // Simulated trails and GPS workouts measure distance from the route instead
-        val addedDist = if (!current.isSimulated && !current.usesGps) delta * strideMeters else 0f
+        val strideLength = when (current.activityType) {
+            "Jogging" -> 0.95f
+            "Hiking" -> 0.70f
+            else -> 0.76f
+        }
+        val addedDist = if (!current.isSimulated) delta * strideLength else 0f
         val newDist = current.distanceMeters + addedDist
         val km = newDist / 1000f
-        val pace = if (km > 0.05f) (current.elapsedTimeSeconds / 60f) / km else 0f
+        val pace = if (km > 0.02f) (current.elapsedTimeSeconds / 60f) / km else 0f
         val cals = (newSteps * 0.045f + (newDist * 0.032f)).toInt()
 
         _liveMetrics.value = current.copy(
@@ -213,34 +339,62 @@ class WorkoutLocationTracker(private val context: Context) : LocationListener {
         )
     }
 
-    override fun onLocationChanged(location: Location) {
+    private fun handleNewLocation(location: Location, providerName: String = "GPS") {
         val current = _liveMetrics.value
-        if (!current.isRunning || current.isPaused || current.isSimulated || !current.usesGps) return
-        // Ignore coarse fixes; they add zig-zag jitter to both the route and the distance
-        if (location.hasAccuracy() && location.accuracy > 30f) return
-
         val point = LatLngPoint(location.latitude, location.longitude, location.time)
-        val points = current.routePoints.toMutableList()
-        points.add(point)
 
+        // Always update the live pinpoint location and accuracy
+        if (!current.isRunning) {
+            _liveMetrics.value = current.copy(
+                currentPosition = point,
+                isGpsLocked = true,
+                accuracyMeters = location.accuracy,
+                provider = providerName
+            )
+            return
+        }
+
+        if (current.isPaused || current.isSimulated) return
+
+        // Compute incremental distance if previous point exists
         var addedDistance = 0f
-        lastLocation?.let {
-            addedDistance = it.distanceTo(location)
+        lastLocation?.let { prev ->
+            val dist = prev.distanceTo(location)
+            val timeDiffSec = ((location.time - prev.time).coerceAtLeast(500L)) / 1000f
+            val speed = dist / timeDiffSec
+            // Filter extreme GPS jitter jumps (> 50 m/s ~ 180 km/h)
+            if (speed < 50f && dist > 0.4f) {
+                addedDistance = dist
+            }
         }
         lastLocation = location
 
+        val points = current.routePoints.toMutableList()
+        points.add(point)
+
         val newDistance = current.distanceMeters + addedDistance
         val km = newDistance / 1000f
-        val pace = if (km > 0.05f) (current.elapsedTimeSeconds / 60f) / km else 0f
+        val pace = if (km > 0.02f) (current.elapsedTimeSeconds / 60f) / km else 0f
 
         _liveMetrics.value = current.copy(
             distanceMeters = newDistance,
             currentPaceMinPerKm = pace,
-            routePoints = points
+            routePoints = points,
+            currentPosition = point,
+            isGpsLocked = true,
+            accuracyMeters = location.accuracy,
+            provider = providerName
         )
     }
 
-    override fun onProviderEnabled(provider: String) {}
+    override fun onLocationChanged(location: Location) {
+        handleNewLocation(location, "Native LocationListener")
+    }
+
+    override fun onProviderEnabled(provider: String) {
+        fetchImmediateLastKnownLocation()
+    }
+
     override fun onProviderDisabled(provider: String) {}
     @Deprecated("Deprecated in Java")
     override fun onStatusChanged(provider: String?, status: Int, extras: Bundle?) {}

@@ -27,11 +27,13 @@ abstract class PulseStepDatabase : RoomDatabase() {
 
         fun getDatabase(context: Context): PulseStepDatabase {
             return INSTANCE ?: synchronized(this) {
-                INSTANCE ?: Room.databaseBuilder(
+                val instance = Room.databaseBuilder(
                     context.applicationContext,
                     PulseStepDatabase::class.java,
                     "pulsestep_database"
-                ).build().also { INSTANCE = it }
+                ).build()
+                INSTANCE = instance
+                instance
             }
         }
     }

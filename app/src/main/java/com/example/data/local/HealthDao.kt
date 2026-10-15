@@ -27,8 +27,8 @@ interface DailyStepDao {
     @Query("UPDATE daily_steps SET syncedToHealthConnect = :synced WHERE dateKey = :dateKey")
     suspend fun updateSyncStatus(dateKey: String, synced: Boolean)
 
-    @Query("UPDATE daily_steps SET goalSteps = :newGoal WHERE dateKey = :dateKey")
-    suspend fun updateStepGoal(dateKey: String, newGoal: Int)
+    @Query("UPDATE daily_steps SET goalSteps = :newGoal")
+    suspend fun updateAllStepGoals(newGoal: Int)
 
     @Query("DELETE FROM daily_steps")
     suspend fun clearAllDailySteps()

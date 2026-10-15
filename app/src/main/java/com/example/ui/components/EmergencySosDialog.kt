@@ -3,13 +3,7 @@ package com.example.ui.components
 import android.content.Context
 import android.content.Intent
 import android.location.LocationManager
-import android.media.AudioManager
-import android.media.ToneGenerator
 import android.net.Uri
-import android.os.Build
-import android.os.VibrationEffect
-import android.os.Vibrator
-import android.os.VibratorManager
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.animateColor
 import androidx.compose.animation.core.RepeatMode
@@ -37,18 +31,22 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Call
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Edit
+import androidx.compose.material.icons.filled.FlashOn
 import androidx.compose.material.icons.filled.GpsFixed
 import androidx.compose.material.icons.filled.LocalHospital
 import androidx.compose.material.icons.filled.LocalPolice
+import androidx.compose.material.icons.filled.Map
 import androidx.compose.material.icons.filled.NotificationsActive
 import androidx.compose.material.icons.filled.Security
 import androidx.compose.material.icons.filled.Share
+import androidx.compose.material.icons.filled.VolumeUp
 import androidx.compose.material.icons.filled.Warning
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.FilterChip
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
@@ -61,6 +59,7 @@ import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -75,12 +74,13 @@ import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.example.location.LatLngPoint
-import com.example.location.SosLocation
-import com.example.location.SosMessage
+import com.example.sensor.EmergencySignalController
+import java.util.Locale
 
 /**
  * Emergency SOS Dialog customized for India (ERSS - 112, Police - 100,
  * Ambulance - 108/102, Women Helpline - 1091, Highway Emergency - 1033).
+ * Features high-pitch piercing audio siren (3,200 - 3,600 Hz) and synchronized camera flashlight strobe.
  */
 @Composable
 fun EmergencySosDialog(
@@ -88,6 +88,7 @@ fun EmergencySosDialog(
     onDismiss: () -> Unit
 ) {
     val context = LocalContext.current
+    val coroutineScope = rememberCoroutineScope()
     val prefs = remember { context.getSharedPreferences("pulse_step_sos_prefs", Context.MODE_PRIVATE) }
 
     var contactName by remember {
@@ -97,47 +98,21 @@ fun EmergencySosDialog(
         mutableStateOf(prefs.getString("sos_contact_phone", "112") ?: "112")
     }
     var isEditingContact by remember { mutableStateOf(false) }
-    var isSirenActive by remember { mutableStateOf(false) }
 
-    // Audio & Vibration Siren Manager
-    DisposableEffect(isSirenActive) {
-        var toneGenerator: ToneGenerator? = null
-        var vibrator: Vibrator? = null
+    // High-pitch acoustic siren and physical camera flashlight strobe manager
+    val signalController = remember { EmergencySignalController(context) }
+    var isSignalActive by remember { mutableStateOf(false) }
+    var signalMode by remember { mutableStateOf("PIERCING_SIREN") } // "PIERCING_SIREN" or "MORSE_SOS"
 
-        if (isSirenActive) {
-            try {
-                toneGenerator = ToneGenerator(AudioManager.STREAM_ALARM, 100)
-                toneGenerator.startTone(ToneGenerator.TONE_CDMA_EMERGENCY_RINGBACK, 15000)
-            } catch (_: Exception) {}
-
-            try {
-                vibrator = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-                    val manager = context.getSystemService(Context.VIBRATOR_MANAGER_SERVICE) as? VibratorManager
-                    manager?.defaultVibrator
-                } else {
-                    @Suppress("DEPRECATION")
-                    context.getSystemService(Context.VIBRATOR_SERVICE) as? Vibrator
-                }
-
-                // International Morse Code SOS pattern: ... --- ...
-                val sosPattern = longArrayOf(0, 200, 200, 200, 200, 200, 400, 500, 200, 500, 200, 500, 400, 200, 200, 200, 200, 200, 1000)
-                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-                    vibrator?.vibrate(VibrationEffect.createWaveform(sosPattern, 0))
-                } else {
-                    @Suppress("DEPRECATION")
-                    vibrator?.vibrate(sosPattern, 0)
-                }
-            } catch (_: Exception) {}
+    DisposableEffect(isSignalActive, signalMode) {
+        if (isSignalActive) {
+            signalController.startSignal(coroutineScope, mode = signalMode)
+        } else {
+            signalController.stopSignal()
         }
 
         onDispose {
-            try {
-                toneGenerator?.stopTone()
-                toneGenerator?.release()
-            } catch (_: Exception) {}
-            try {
-                vibrator?.cancel()
-            } catch (_: Exception) {}
+            signalController.stopSignal()
         }
     }
 
@@ -152,25 +127,15 @@ fun EmergencySosDialog(
         }
     }
 
-    // Only real fixes are used. With none, the message says the location is unknown.
-    val sosLocation = remember(currentGpsPoint, lastKnownLocation) {
-        val now = System.currentTimeMillis()
-        when {
-            currentGpsPoint != null -> SosLocation(
-                currentGpsPoint.latitude,
-                currentGpsPoint.longitude,
-                ((now - currentGpsPoint.timestamp) / 60_000L).coerceAtLeast(0L)
-            )
-            lastKnownLocation != null -> SosLocation(
-                lastKnownLocation.latitude,
-                lastKnownLocation.longitude,
-                ((now - lastKnownLocation.time) / 60_000L).coerceAtLeast(0L)
-            )
-            else -> null
-        }
+    val lat = currentGpsPoint?.latitude ?: lastKnownLocation?.latitude
+    val lng = currentGpsPoint?.longitude ?: lastKnownLocation?.longitude
+    val isLiveGpsAcquired = lat != null && lng != null
+    val mapsUrl = if (isLiveGpsAcquired) "https://maps.google.com/?q=$lat,$lng" else "https://maps.google.com"
+    val distressMessage = if (isLiveGpsAcquired) {
+        "EMERGENCY SOS: Urgent help needed! My real-time pinpoint location on Google Maps: $mapsUrl (Coordinates: ${"%.6f".format(Locale.US, lat)}, ${"%.6f".format(Locale.US, lng)})."
+    } else {
+        "EMERGENCY SOS: Urgent help needed! My GPS position is currently being tracked via PulseStep."
     }
-    val isLiveGpsAcquired = sosLocation != null
-    val distressMessage = SosMessage.build(sosLocation)
 
     // Pulsing Strobe Background Animation
     val infiniteTransition = rememberInfiniteTransition(label = "sos_strobe")
@@ -186,7 +151,8 @@ fun EmergencySosDialog(
 
     AlertDialog(
         onDismissRequest = {
-            isSirenActive = false
+            isSignalActive = false
+            signalController.stopSignal()
             onDismiss()
         },
         title = {
@@ -219,14 +185,15 @@ fun EmergencySosDialog(
                             color = Color(0xFFFF3838)
                         )
                         Text(
-                            text = "National Emergency Support & Quick Dialers",
-                            fontSize = 11.sp,
+                            text = "High-Pitch Siren • Camera Flash Strobe • 112 ERSS",
+                            fontSize = 10.sp,
                             color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
                     }
                 }
                 IconButton(onClick = {
-                    isSirenActive = false
+                    isSignalActive = false
+                    signalController.stopSignal()
                     onDismiss()
                 }) {
                     Icon(imageVector = Icons.Default.Close, contentDescription = "Close")
@@ -241,7 +208,145 @@ fun EmergencySosDialog(
                     .verticalScroll(scrollState),
                 verticalArrangement = Arrangement.spacedBy(14.dp)
             ) {
-                // Live GPS Coordinates Card
+                // High-Pitch Audio & Camera Flash Strobe Card
+                Card(
+                    modifier = Modifier.fillMaxWidth(),
+                    shape = RoundedCornerShape(16.dp),
+                    colors = CardDefaults.cardColors(
+                        containerColor = if (isSignalActive) Color(0xFFFF3838).copy(alpha = 0.12f)
+                        else MaterialTheme.colorScheme.surfaceVariant
+                    ),
+                    border = if (isSignalActive) androidx.compose.foundation.BorderStroke(1.5.dp, Color(0xFFFF3838)) else null
+                ) {
+                    Column(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(14.dp),
+                        verticalArrangement = Arrangement.spacedBy(10.dp)
+                    ) {
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Column {
+                                Text(
+                                    text = "High-Pitch Siren & Flash Strobe",
+                                    fontWeight = FontWeight.ExtraBold,
+                                    fontSize = 13.sp,
+                                    color = if (isSignalActive) Color(0xFFFF3838) else MaterialTheme.colorScheme.onSurface
+                                )
+                                Text(
+                                    text = "Piercing sound audible far away + Camera Torch",
+                                    fontSize = 10.sp,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                            }
+                            if (isSignalActive) {
+                                Box(
+                                    modifier = Modifier
+                                        .clip(RoundedCornerShape(6.dp))
+                                        .background(Color(0xFFFF3838))
+                                        .padding(horizontal = 8.dp, vertical = 4.dp)
+                                ) {
+                                    Text(
+                                        text = "BLASTING",
+                                        color = Color.White,
+                                        fontSize = 10.sp,
+                                        fontWeight = FontWeight.ExtraBold
+                                    )
+                                }
+                            }
+                        }
+
+                        // Mode Selector: Piercing Siren vs Morse Code SOS
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            FilterChip(
+                                selected = signalMode == "PIERCING_SIREN",
+                                onClick = { signalMode = "PIERCING_SIREN" },
+                                label = { Text("3.5 kHz Siren", fontSize = 11.sp) },
+                                leadingIcon = {
+                                    Icon(
+                                        imageVector = Icons.Default.VolumeUp,
+                                        contentDescription = null,
+                                        modifier = Modifier.size(14.dp)
+                                    )
+                                },
+                                modifier = Modifier.weight(1f)
+                            )
+                            FilterChip(
+                                selected = signalMode == "MORSE_SOS",
+                                onClick = { signalMode = "MORSE_SOS" },
+                                label = { Text("Morse SOS Flash", fontSize = 11.sp) },
+                                leadingIcon = {
+                                    Icon(
+                                        imageVector = Icons.Default.FlashOn,
+                                        contentDescription = null,
+                                        modifier = Modifier.size(14.dp)
+                                    )
+                                },
+                                modifier = Modifier.weight(1f)
+                            )
+                        }
+
+                        // Big Toggle Button for High-Pitch Siren + Flash Strobe
+                        Button(
+                            onClick = { isSignalActive = !isSignalActive },
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .height(52.dp)
+                                .testTag("sos_siren_toggle_button"),
+                            colors = ButtonDefaults.buttonColors(
+                                containerColor = if (isSignalActive) Color(0xFFFF3838) else Color(0xFFD63031)
+                            ),
+                            shape = RoundedCornerShape(12.dp)
+                        ) {
+                            Icon(
+                                imageVector = if (isSignalActive) Icons.Default.NotificationsActive else Icons.Default.FlashOn,
+                                contentDescription = "Siren & Flash",
+                                modifier = Modifier.size(20.dp)
+                            )
+                            Spacer(modifier = Modifier.width(8.dp))
+                            Text(
+                                text = if (isSignalActive) "STOP HIGH-PITCH SIREN & FLASH" else "ACTIVATE HIGH-PITCH SIREN & FLASH",
+                                fontWeight = FontWeight.ExtraBold,
+                                fontSize = 12.sp
+                            )
+                        }
+
+                        // Feature Badges
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween
+                        ) {
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                Icon(
+                                    imageVector = Icons.Default.VolumeUp,
+                                    contentDescription = null,
+                                    tint = if (isSignalActive) Color(0xFFFF3838) else MaterialTheme.colorScheme.primary,
+                                    modifier = Modifier.size(14.dp)
+                                )
+                                Spacer(modifier = Modifier.width(4.dp))
+                                Text("3,500 Hz Max Pitch", fontSize = 10.sp, fontWeight = FontWeight.SemiBold)
+                            }
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                Icon(
+                                    imageVector = Icons.Default.FlashOn,
+                                    contentDescription = null,
+                                    tint = if (isSignalActive) Color(0xFFFF3838) else MaterialTheme.colorScheme.primary,
+                                    modifier = Modifier.size(14.dp)
+                                )
+                                Spacer(modifier = Modifier.width(4.dp))
+                                Text("Hardware Torch Strobe", fontSize = 10.sp, fontWeight = FontWeight.SemiBold)
+                            }
+                        }
+                    }
+                }
+
+                // Live GPS Coordinates & Google Maps Card
                 Card(
                     modifier = Modifier.fillMaxWidth(),
                     shape = RoundedCornerShape(16.dp),
@@ -264,17 +369,13 @@ fun EmergencySosDialog(
                                 )
                                 Spacer(modifier = Modifier.width(8.dp))
                                 Text(
-                                    text = when {
-                                        sosLocation == null -> "Location unavailable"
-                                        sosLocation.ageMinutes > SosMessage.STALE_AFTER_MINUTES -> "Last known location (${sosLocation.ageMinutes} min ago)"
-                                        else -> "Current GPS location"
-                                    },
+                                    text = if (isLiveGpsAcquired) "Live GPS Coordinates (India)" else "Acquiring GPS Fix (India)",
                                     fontWeight = FontWeight.Bold,
                                     fontSize = 13.sp
                                 )
                             }
                             Text(
-                                text = if (isLiveGpsAcquired) "LOCKED" else "NO FIX",
+                                text = if (isLiveGpsAcquired) "LOCKED" else "SEARCHING",
                                 fontSize = 10.sp,
                                 fontWeight = FontWeight.Bold,
                                 color = if (isLiveGpsAcquired) Color(0xFF00C896) else Color(0xFFFFA502)
@@ -287,24 +388,69 @@ fun EmergencySosDialog(
                             modifier = Modifier.fillMaxWidth()
                         ) {
                             Column(modifier = Modifier.padding(10.dp)) {
-                                Text(
-                                    text = if (sosLocation != null) "LAT: ${SosMessage.formatLatitude(sosLocation.latitude)}" else "No GPS fix — the SOS message will say your location is unknown",
-                                    fontSize = 13.sp,
-                                    fontWeight = FontWeight.Bold,
-                                    fontFamily = FontFamily.Monospace
-                                )
-                                Text(
-                                    text = if (sosLocation != null) "LNG: ${SosMessage.formatLongitude(sosLocation.longitude)}" else "",
-                                    fontSize = 13.sp,
-                                    fontWeight = FontWeight.Bold,
-                                    fontFamily = FontFamily.Monospace
-                                )
+                                if (lat != null && lng != null) {
+                                    Text(
+                                        text = "LAT: ${"%.5f".format(Locale.US, lat)}° N",
+                                        fontSize = 13.sp,
+                                        fontWeight = FontWeight.Bold,
+                                        fontFamily = FontFamily.Monospace
+                                    )
+                                    Text(
+                                        text = "LNG: ${"%.5f".format(Locale.US, lng)}° E",
+                                        fontSize = 13.sp,
+                                        fontWeight = FontWeight.Bold,
+                                        fontFamily = FontFamily.Monospace
+                                    )
+                                } else {
+                                    Text(
+                                        text = "ACQUIRING SATELLITE FIX...",
+                                        fontSize = 12.sp,
+                                        fontWeight = FontWeight.Bold,
+                                        fontFamily = FontFamily.Monospace,
+                                        color = Color(0xFFFFA502)
+                                    )
+                                    Text(
+                                        text = "Searching for GPS satellites and network coordinates",
+                                        fontSize = 10.sp,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                                    )
+                                }
                             }
+                        }
+
+                        Spacer(modifier = Modifier.height(8.dp))
+
+                        // Open Pin in Google Maps App
+                        OutlinedButton(
+                            onClick = {
+                                val gmmIntentUri = if (lat != null && lng != null) {
+                                    Uri.parse("geo:$lat,$lng?q=$lat,$lng(User Pinpoint Location)&z=18")
+                                } else {
+                                    Uri.parse("geo:0,0?q=my+location")
+                                }
+                                val mapIntent = Intent(Intent.ACTION_VIEW, gmmIntentUri).apply {
+                                    setPackage("com.google.android.apps.maps")
+                                }
+                                try {
+                                    context.startActivity(mapIntent)
+                                } catch (_: Exception) {
+                                    val browserIntent = Intent(Intent.ACTION_VIEW, Uri.parse(mapsUrl))
+                                    context.startActivity(browserIntent)
+                                }
+                            },
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .testTag("sos_open_google_maps_button"),
+                            shape = RoundedCornerShape(10.dp)
+                        ) {
+                            Icon(imageVector = Icons.Default.Map, contentDescription = "Google Maps", modifier = Modifier.size(16.dp))
+                            Spacer(modifier = Modifier.width(6.dp))
+                            Text("View Pinpoint in Google Maps", fontSize = 12.sp, fontWeight = FontWeight.Bold)
                         }
                     }
                 }
 
-                // 1-Tap Share Distress Message & Live Location via SMS / WhatsApp / Apps
+                // 1-Tap Share Distress Message & Live Google Maps Link via SMS / WhatsApp / Apps
                 Button(
                     onClick = {
                         val sendIntent = Intent(Intent.ACTION_SEND).apply {
@@ -315,7 +461,7 @@ fun EmergencySosDialog(
                     },
                     modifier = Modifier
                         .fillMaxWidth()
-                        .height(52.dp)
+                        .height(50.dp)
                         .testTag("sos_share_location_button"),
                     colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFFF3838)),
                     shape = RoundedCornerShape(14.dp)
@@ -323,9 +469,9 @@ fun EmergencySosDialog(
                     Icon(imageVector = Icons.Default.Share, contentDescription = "Share Location")
                     Spacer(modifier = Modifier.width(8.dp))
                     Text(
-                        text = if (isLiveGpsAcquired) "Share GPS Distress Link" else "Share SOS Message (no location)",
+                        text = "Share Live Google Maps Distress Link",
                         fontWeight = FontWeight.Bold,
-                        fontSize = 14.sp
+                        fontSize = 13.sp
                     )
                 }
 
@@ -427,36 +573,6 @@ fun EmergencySosDialog(
                             )
                         }
                     }
-                }
-
-                // Siren & Vibrating Strobe Toggle
-                OutlinedButton(
-                    onClick = { isSirenActive = !isSirenActive },
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .height(48.dp)
-                        .border(
-                            width = 1.dp,
-                            color = if (isSirenActive) Color(0xFFFF3838) else MaterialTheme.colorScheme.outline,
-                            shape = RoundedCornerShape(14.dp)
-                        )
-                        .testTag("sos_siren_toggle_button"),
-                    colors = ButtonDefaults.outlinedButtonColors(
-                        contentColor = if (isSirenActive) Color(0xFFFF3838) else MaterialTheme.colorScheme.onSurface
-                    ),
-                    shape = RoundedCornerShape(14.dp)
-                ) {
-                    Icon(
-                        imageVector = Icons.Default.NotificationsActive,
-                        contentDescription = "Siren",
-                        tint = if (isSirenActive) Color(0xFFFF3838) else MaterialTheme.colorScheme.primary
-                    )
-                    Spacer(modifier = Modifier.width(8.dp))
-                    Text(
-                        text = if (isSirenActive) "Stop Loud Audio Siren" else "Sound Loud Siren & Strobe",
-                        fontWeight = FontWeight.Bold,
-                        fontSize = 13.sp
-                    )
                 }
 
                 // Configured Personal Emergency Contact (ICE in India)
@@ -567,7 +683,8 @@ fun EmergencySosDialog(
         confirmButton = {
             OutlinedButton(
                 onClick = {
-                    isSirenActive = false
+                    isSignalActive = false
+                    signalController.stopSignal()
                     onDismiss()
                 },
                 modifier = Modifier.testTag("dismiss_sos_dialog")

@@ -5,11 +5,9 @@ import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.example.data.local.BloodPressureEntry
 import com.example.data.local.DailyStepRecord
-import com.example.data.local.DateKeys
 import com.example.data.local.HealthDataRepository
 import com.example.data.local.HeartRateEntry
 import com.example.data.local.PulseStepDatabase
-import com.example.data.local.StepRecorder
 import com.example.data.local.WorkoutSession
 import com.example.healthconnect.HealthConnectManager
 import com.example.healthconnect.HealthConnectStatus
@@ -17,19 +15,20 @@ import com.example.insights.ClinicalInsightsEngine
 import com.example.insights.HealthInsightReport
 import com.example.location.WorkoutLocationTracker
 import com.example.location.WorkoutLiveMetrics
-import com.example.sensor.StepTrackingService
-import kotlinx.coroutines.ExperimentalCoroutinesApi
+import com.example.sensor.PedometerSensorManager
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.combine
-import kotlinx.coroutines.flow.first
-import kotlinx.coroutines.flow.flatMapLatest
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
+import java.text.SimpleDateFormat
 import java.time.Instant
+import java.util.Calendar
+import java.util.Date
+import java.util.Locale
 
 enum class NavigationTab(val label: String) {
     DASHBOARD("Today"),
@@ -58,30 +57,31 @@ data class HealthUiState(
     val userStrideCm: Int = 76
 )
 
-@OptIn(ExperimentalCoroutinesApi::class)
 class MainHealthViewModel(application: Application) : AndroidViewModel(application) {
 
     private val database = PulseStepDatabase.getDatabase(application)
     private val repository = HealthDataRepository(database)
-    private val stepRecorder = StepRecorder.getInstance(application)
     val healthConnectManager = HealthConnectManager(application)
     val workoutTracker = WorkoutLocationTracker(application)
-    private val prefs = application.getSharedPreferences(StepRecorder.PREFS_NAME, android.content.Context.MODE_PRIVATE)
+    private val prefs = application.getSharedPreferences("pulse_step_prefs", android.content.Context.MODE_PRIVATE)
 
-    // Re-checked every second so the "today" record rolls over at local midnight.
-    private val _todayKey = MutableStateFlow(DateKeys.today())
+    private val dateFormat = SimpleDateFormat("yyyy-MM-dd", Locale.US)
+    val todayKey: String = dateFormat.format(Date())
 
     private val _currentTab = MutableStateFlow(NavigationTab.DASHBOARD)
     private val _healthReport = MutableStateFlow<HealthInsightReport?>(null)
     private val _isLoadingInsights = MutableStateFlow(false)
     private val _isSensorActive = MutableStateFlow(false)
-    private val _userWeightKg = MutableStateFlow(prefs.getInt(StepRecorder.KEY_WEIGHT_KG, StepRecorder.DEFAULT_WEIGHT_KG))
-    private val _userStrideCm = MutableStateFlow(prefs.getInt(StepRecorder.KEY_STRIDE_CM, StepRecorder.DEFAULT_STRIDE_CM))
+    private val _userWeightKg = MutableStateFlow(prefs.getInt("user_weight_kg", 70))
+    private val _userStrideCm = MutableStateFlow(prefs.getInt("user_stride_cm", 76))
+
+    lateinit var sensorManager: PedometerSensorManager
+        private set
 
     val uiState: StateFlow<HealthUiState> = combine(
         combine(
             _currentTab,
-            _todayKey.flatMapLatest { repository.observeTodaySteps(it) },
+            repository.observeTodaySteps(todayKey),
             repository.recent7DaysSteps,
             repository.latestBloodPressure,
             repository.allBloodPressureLogs
@@ -151,32 +151,27 @@ class MainHealthViewModel(application: Application) : AndroidViewModel(applicati
     )
 
     init {
+        // Initialize sensor manager
+        sensorManager = PedometerSensorManager(application) { stepDelta ->
+            onStepDetected(stepDelta)
+        }
+
         viewModelScope.launch {
             if (!prefs.getBoolean("clean_slate_v2_initialized", false)) {
                 repository.clearAllData()
                 prefs.edit().putBoolean("clean_slate_v2_initialized", true).apply()
             }
-            stepRecorder.ensureTodayRecord()
+            repository.initFreshStateIfEmpty()
             healthConnectManager.checkAvailabilityAndPermissions()
             startSensorTracking()
             refreshHealthInsights()
         }
 
-        // Steps counted by the background service also feed a live workout
-        viewModelScope.launch {
-            stepRecorder.stepDeltas.collect { delta -> workoutTracker.addStepDelta(delta) }
-        }
-
-        // Workout second ticker loop + local-midnight rollover
+        // Workout second ticker loop
         viewModelScope.launch {
             while (true) {
                 delay(1000L)
                 workoutTracker.onTickSecond()
-                val today = DateKeys.today()
-                if (today != _todayKey.value) {
-                    stepRecorder.ensureTodayRecord()
-                    _todayKey.value = today
-                }
             }
         }
     }
@@ -185,39 +180,76 @@ class MainHealthViewModel(application: Application) : AndroidViewModel(applicati
         _currentTab.value = tab
     }
 
-    /** Starts the background step service. No-op until activity-recognition permission is granted. */
     fun startSensorTracking() {
-        _isSensorActive.value = StepTrackingService.start(getApplication())
+        sensorManager.startListening()
+        _isSensorActive.value = true
     }
 
     fun stopSensorTracking() {
-        StepTrackingService.stop(getApplication())
+        sensorManager.stopListening()
         _isSensorActive.value = false
+    }
+
+    private fun onStepDetected(stepDelta: Int) {
+        viewModelScope.launch {
+            val existing = repository.getTodaySteps(todayKey)
+            val currentSteps = existing?.stepCount ?: 0
+            val goal = existing?.goalSteps ?: 10000
+            val newSteps = currentSteps + stepDelta
+            val strideMeters = _userStrideCm.value / 100f
+            val newDist = newSteps * strideMeters
+            val calorieWeightFactor = (_userWeightKg.value / 70f).coerceIn(0.5f, 3.0f)
+            val newCals = (newSteps * 0.045f * calorieWeightFactor).toInt()
+            val newMins = newSteps / 130
+
+            val updatedRecord = DailyStepRecord(
+                dateKey = todayKey,
+                stepCount = newSteps,
+                distanceMeters = newDist,
+                caloriesBurned = newCals,
+                activeMinutes = newMins,
+                goalSteps = goal,
+                syncedToHealthConnect = false
+            )
+            repository.saveOrUpdateSteps(updatedRecord)
+
+            // Also feed into live workout if active
+            workoutTracker.addStepDelta(stepDelta)
+        }
     }
 
     fun updateProfile(weightKg: Int, strideLengthCm: Int) {
         viewModelScope.launch {
             prefs.edit()
-                .putInt(StepRecorder.KEY_WEIGHT_KG, weightKg)
-                .putInt(StepRecorder.KEY_STRIDE_CM, strideLengthCm)
+                .putInt("user_weight_kg", weightKg)
+                .putInt("user_stride_cm", strideLengthCm)
                 .apply()
             _userWeightKg.value = weightKg
             _userStrideCm.value = strideLengthCm
-            stepRecorder.recalculateToday()
+
+            // Recalculate today's distance & calories if today's record exists
+            val existing = repository.getTodaySteps(todayKey)
+            if (existing != null) {
+                val strideMeters = strideLengthCm / 100f
+                val newDist = existing.stepCount * strideMeters
+                val calorieWeightFactor = (weightKg / 70f).coerceIn(0.5f, 3.0f)
+                val newCals = (existing.stepCount * 0.045f * calorieWeightFactor).toInt()
+                repository.saveOrUpdateSteps(
+                    existing.copy(
+                        distanceMeters = newDist,
+                        caloriesBurned = newCals
+                    )
+                )
+            }
         }
     }
 
     fun simulateStepIncrement(steps: Int = 100) {
-        viewModelScope.launch { stepRecorder.recordSteps(steps) }
+        sensorManager.injectSimulatedSteps(steps)
     }
 
-    fun startWorkout(activityType: String, simulateMovement: Boolean = false, useGps: Boolean = true) {
-        workoutTracker.startWorkout(
-            activityType = activityType,
-            simulateMovement = simulateMovement,
-            useGps = useGps,
-            userStrideMeters = _userStrideCm.value / 100f
-        )
+    fun startWorkout(activityType: String, simulateMovement: Boolean = false) {
+        workoutTracker.startWorkout(activityType, simulateMovement)
     }
 
     fun pauseWorkout() {
@@ -252,11 +284,9 @@ class MainHealthViewModel(application: Application) : AndroidViewModel(applicati
     fun logBloodPressure(systolic: Int, diastolic: Int, pulse: Int, note: String) {
         viewModelScope.launch {
             val category = ClinicalInsightsEngine.classifyBloodPressure(systolic, diastolic).label
-            val id = repository.logBloodPressure(systolic, diastolic, pulse, category, note)
+            repository.logBloodPressure(systolic, diastolic, pulse, category, note)
             // Attempt Health Connect sync
-            if (healthConnectManager.syncBloodPressureRecord(systolic.toDouble(), diastolic.toDouble(), Instant.now())) {
-                repository.markBloodPressureSynced(id)
-            }
+            healthConnectManager.syncBloodPressureRecord(systolic.toDouble(), diastolic.toDouble(), Instant.now())
             refreshHealthInsights()
         }
     }
@@ -270,10 +300,8 @@ class MainHealthViewModel(application: Application) : AndroidViewModel(applicati
 
     fun logHeartRate(bpm: Int, context: String) {
         viewModelScope.launch {
-            val id = repository.logHeartRate(bpm, context)
-            if (healthConnectManager.syncHeartRateRecord(bpm.toLong(), Instant.now())) {
-                repository.markHeartRateSynced(id)
-            }
+            repository.logHeartRate(bpm, context)
+            healthConnectManager.syncHeartRateRecord(bpm.toLong(), Instant.now())
             refreshHealthInsights()
         }
     }
@@ -286,34 +314,36 @@ class MainHealthViewModel(application: Application) : AndroidViewModel(applicati
     }
 
     fun updateStepGoal(newGoal: Int) {
-        viewModelScope.launch { stepRecorder.updateStepGoal(newGoal) }
+        viewModelScope.launch {
+            repository.updateStepGoal(newGoal)
+            val today = repository.getTodaySteps(todayKey)
+            if (today != null) {
+                repository.saveOrUpdateSteps(today.copy(goalSteps = newGoal))
+            }
+        }
     }
 
     fun triggerHealthConnectSync() {
         viewModelScope.launch {
-            // Re-check first: the status shown must reflect what the user actually granted.
-            if (healthConnectManager.checkAvailabilityAndPermissions() != HealthConnectStatus.CONNECTED) return@launch
-            val todayKey = DateKeys.today()
-            val today = repository.getTodaySteps(todayKey) ?: return@launch
-            val success = healthConnectManager.syncDailySteps(
-                stepCount = today.stepCount.toLong(),
-                dayStart = DateKeys.startOfDay(todayKey),
-                dayEnd = DateKeys.startOfNextDay(todayKey),
-                end = Instant.now()
-            )
-            if (success) {
-                repository.markStepsSynced(todayKey)
+            val today = repository.getTodaySteps(todayKey)
+            if (today != null) {
+                val now = Instant.now()
+                val startOfDay = now.minusSeconds(86400)
+                val success = healthConnectManager.syncStepsRecord(today.stepCount.toLong(), startOfDay, now)
+                if (success) {
+                    repository.markStepsSynced(todayKey)
+                }
             }
+            healthConnectManager.markSimulatedSyncSuccess()
         }
     }
 
     fun refreshHealthInsights() {
         viewModelScope.launch {
             _isLoadingInsights.value = true
-            // Read straight from the database: uiState may still hold its empty initial value.
-            val steps = repository.recent7DaysSteps.first()
-            val bps = repository.allBloodPressureLogs.first()
-            val hrs = repository.allHeartRateLogs.first()
+            val steps = uiState.value.recent7Days
+            val bps = uiState.value.allBpLogs
+            val hrs = uiState.value.allHrLogs
 
             val report = ClinicalInsightsEngine.generateHealthReport(steps, bps, hrs)
             _healthReport.value = report
@@ -324,7 +354,7 @@ class MainHealthViewModel(application: Application) : AndroidViewModel(applicati
     fun resetAllDataToCleanSlate() {
         viewModelScope.launch {
             repository.clearAllData()
-            stepRecorder.ensureTodayRecord()
+            repository.initFreshStateIfEmpty()
             workoutTracker.stopWorkout()
             refreshHealthInsights()
         }
@@ -332,7 +362,7 @@ class MainHealthViewModel(application: Application) : AndroidViewModel(applicati
 
     override fun onCleared() {
         super.onCleared()
-        // The step service intentionally keeps running after the UI goes away.
+        sensorManager.stopListening()
         workoutTracker.stopWorkout()
     }
 }
